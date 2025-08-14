@@ -28,12 +28,33 @@ log('info', `Server starting on port ${PORT}`);
 log('info', 'OpenAI API Key configured: ' + (OPENAI_API_KEY ? 'Yes' : 'No'));
 
 app.use(express.json({limit: '40mb'}));
-app.use('/output', express.static('output'));
-app.use('/', express.static('client'));
 
-// Explicit root route to serve index.html
+// Static file serving with proper MIME types
+app.use('/output', express.static('output'));
+app.use(express.static('client', {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.css')) {
+      res.setHeader('Content-Type', 'text/css');
+    } else if (path.endsWith('.js')) {
+      res.setHeader('Content-Type', 'application/javascript');
+    } else if (path.endsWith('.webmanifest')) {
+      res.setHeader('Content-Type', 'application/manifest+json');
+    } else if (path.endsWith('.ico')) {
+      res.setHeader('Content-Type', 'image/x-icon');
+    } else if (path.endsWith('.png')) {
+      res.setHeader('Content-Type', 'image/png');
+    }
+  }
+}));
+
+// Explicit route handlers
 app.get('/', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'client', 'index.html'));
+});
+
+app.get('/manifest.webmanifest', (req, res) => {
+  res.setHeader('Content-Type', 'application/manifest+json');
+  res.sendFile(path.join(process.cwd(), 'client', 'manifest.webmanifest'));
 });
 
 // Job management system
