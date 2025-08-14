@@ -31,6 +31,11 @@ app.use(express.json({limit: '40mb'}));
 app.use('/output', express.static('output'));
 app.use('/', express.static('client'));
 
+// Explicit root route to serve index.html
+app.get('/', (req, res) => {
+  res.sendFile(path.join(process.cwd(), 'client', 'index.html'));
+});
+
 // Job management system
 const jobs = new Map();
 
