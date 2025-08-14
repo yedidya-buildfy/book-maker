@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Children's Book Generator</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#f8b84e">
+  <link rel="icon" href="assets/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Children's Book Generator</h1>
+    <button id="installBtn" class="secondary">Install</button>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Book Details</h2>
+      <button id="generateFromScratchBtn" class="secondary" style="margin-bottom: 16px;">✨ Generate from Scratch</button>
+      <label>Book Title
+        <input id="bookTitle" placeholder="לדויד יש רעיון!" />
+      </label>
+      <label>Story Outline
+        <textarea id="story" rows="3" placeholder="Describe the theme, setting, and arc."></textarea>
+      </label>
+      <label>Number of story images (pages)
+        <input id="numImages" type="number" min="3" max="50" value="9">
+      </label>
+      <label>Art Style
+        <select id="artStyle">
+          <option value="Watercolor">Watercolor</option>
+          <option value="Crayon Texture">Crayon Texture</option>
+          <option value="Cartoon">Cartoon</option>
+          <option value="Disney">Disney</option>
+          <option value="Digital Art">Digital Art</option>
+          <option value="Pencil Sketch">Pencil Sketch</option>
+          <option value="Oil Painting">Oil Painting</option>
+          <option value="Pastel">Pastel</option>
+          <option value="Anime/Manga">Anime/Manga</option>
+          <option value="Paper Cutout">Paper Cutout</option>
+          <option value="Clay/3D">Clay/3D</option>
+          <option value="Custom">Custom Style...</option>
+        </select>
+      </label>
+      <label id="customStyleLabel" style="display:none;">Custom Art Style
+        <input id="customStyleInput" placeholder="e.g., Van Gogh style, Abstract art, Minimalist..." />
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Characters</h2>
+      <div id="charContainer" class="char-list"></div>
+      <button id="addCharBtn" class="secondary">+ Add Character</button>
+    </section>
+
+    <section class="card">
+      <h2>Generate</h2>
+      <p class="hint">One-click: analyze characters → plan JSON → create cover + pages → build PDF.</p>
+      <button id="generateBtn">Generate Book PDF</button>
+      <div class="loader" id="loader" hidden>
+        <div class="spinner"></div>
+        <div class="loader-text" id="loaderText">Working...</div>
+      </div>
+      <pre id="status" class="status"></pre>
+      <div id="result"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Local-first UI. API key is in your server <code>.env</code>.</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
