@@ -31,46 +31,80 @@ app.use(express.json({limit: '40mb'}));
 
 // Static file serving with proper MIME types
 app.use('/output', express.static('output'));
-app.use(express.static('client', {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.css')) {
-      res.setHeader('Content-Type', 'text/css');
-    } else if (path.endsWith('.js')) {
-      res.setHeader('Content-Type', 'application/javascript');
-    } else if (path.endsWith('.webmanifest')) {
-      res.setHeader('Content-Type', 'application/manifest+json');
-    } else if (path.endsWith('.ico')) {
-      res.setHeader('Content-Type', 'image/x-icon');
-    } else if (path.endsWith('.png')) {
-      res.setHeader('Content-Type', 'image/png');
+
+// Only use static middleware in development (not on Vercel)
+if (process.env.NODE_ENV !== 'production') {
+  app.use(express.static('client', {
+    setHeaders: (res, path) => {
+      if (path.endsWith('.css')) {
+        res.setHeader('Content-Type', 'text/css');
+      } else if (path.endsWith('.js')) {
+        res.setHeader('Content-Type', 'application/javascript');
+      } else if (path.endsWith('.webmanifest')) {
+        res.setHeader('Content-Type', 'application/manifest+json');
+      } else if (path.endsWith('.ico')) {
+        res.setHeader('Content-Type', 'image/x-icon');
+      } else if (path.endsWith('.png')) {
+        res.setHeader('Content-Type', 'image/png');
+      }
     }
-  }
-}));
+  }));
+}
 
 // Explicitly serve static files (needed for Vercel)
 app.get('/app.js', (req, res) => {
+  log('debug', 'Serving app.js');
   res.setHeader('Content-Type', 'application/javascript');
-  res.sendFile(path.join(process.cwd(), 'client', 'app.js'));
+  res.sendFile(path.join(process.cwd(), 'client', 'app.js'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve app.js', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/style.css', (req, res) => {
+  log('debug', 'Serving style.css');
   res.setHeader('Content-Type', 'text/css');
-  res.sendFile(path.join(process.cwd(), 'client', 'style.css'));
+  res.sendFile(path.join(process.cwd(), 'client', 'style.css'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve style.css', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/favicon.ico', (req, res) => {
+  log('debug', 'Serving favicon.ico');
   res.setHeader('Content-Type', 'image/x-icon');
-  res.sendFile(path.join(process.cwd(), 'client', 'favicon.ico'));
+  res.sendFile(path.join(process.cwd(), 'client', 'favicon.ico'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve favicon.ico', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/favicon-16x16.png', (req, res) => {
+  log('debug', 'Serving favicon-16x16.png');
   res.setHeader('Content-Type', 'image/png');
-  res.sendFile(path.join(process.cwd(), 'client', 'favicon-16x16.png'));
+  res.sendFile(path.join(process.cwd(), 'client', 'favicon-16x16.png'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve favicon-16x16.png', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/favicon-32x32.png', (req, res) => {
+  log('debug', 'Serving favicon-32x32.png');
   res.setHeader('Content-Type', 'image/png');
-  res.sendFile(path.join(process.cwd(), 'client', 'favicon-32x32.png'));
+  res.sendFile(path.join(process.cwd(), 'client', 'favicon-32x32.png'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve favicon-32x32.png', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/assets/icons/icon-192.png', (req, res) => {
@@ -89,8 +123,29 @@ app.get('/', (req, res) => {
 });
 
 app.get('/manifest.webmanifest', (req, res) => {
+  log('debug', 'Serving manifest.webmanifest');
   res.setHeader('Content-Type', 'application/manifest+json');
-  res.sendFile(path.join(process.cwd(), 'client', 'manifest.webmanifest'));
+  res.sendFile(path.join(process.cwd(), 'client', 'manifest.webmanifest'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve manifest.webmanifest', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
+});
+
+// Catch-all route for other static files
+app.get('*', (req, res) => {
+  log('debug', 'Catch-all route hit', { path: req.path });
+  
+  // Try to serve from client directory
+  const filePath = path.join(process.cwd(), 'client', req.path);
+  if (fs.existsSync(filePath)) {
+    log('debug', 'Serving file from client directory', { path: req.path });
+    res.sendFile(filePath);
+  } else {
+    log('warn', 'File not found', { path: req.path });
+    res.status(404).send('File not found');
+  }
 });
 
 // Job management system

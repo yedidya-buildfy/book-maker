@@ -16,31 +16,58 @@
       "dest": "/server.js"
     },
     {
+      "src": "/manifest.webmanifest",
+      "dest": "/client/manifest.webmanifest",
+      "headers": {
+        "Content-Type": "application/manifest+json"
+      }
+    },
+    {
+      "src": "/style.css",
+      "dest": "/client/style.css",
+      "headers": {
+        "Content-Type": "text/css"
+      }
+    },
+    {
+      "src": "/app.js",
+      "dest": "/client/app.js",
+      "headers": {
+        "Content-Type": "application/javascript"
+      }
+    },
+    {
+      "src": "/favicon.ico",
+      "dest": "/client/favicon.ico",
+      "headers": {
+        "Content-Type": "image/x-icon"
+      }
+    },
+    {
+      "src": "/favicon-16x16.png",
+      "dest": "/client/favicon-16x16.png",
+      "headers": {
+        "Content-Type": "image/png"
+      }
+    },
+    {
+      "src": "/favicon-32x32.png",
+      "dest": "/client/favicon-32x32.png",
+      "headers": {
+        "Content-Type": "image/png"
+      }
+    },
+    {
       "src": "/assets/(.*)",
       "dest": "/client/assets/$1"
     },
     {
-      "src": "/favicon.ico",
-      "dest": "/client/favicon.ico"
-    },
-    {
-      "src": "/favicon-16x16.png",
-      "dest": "/client/favicon-16x16.png"
-    },
-    {
-      "src": "/favicon-32x32.png",
-      "dest": "/client/favicon-32x32.png"
-    },
-    {
-      "src": "/manifest.webmanifest",
-      "dest": "/client/manifest.webmanifest"
+      "src": "/",
+      "dest": "/client/index.html"
     },
     {
       "src": "/(.*)",
       "dest": "/client/$1"
     }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  }
+  ]
 }
