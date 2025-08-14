@@ -8,39 +8,8 @@
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/server.js"
-    },
-    {
-      "src": "/output/(.*)",
-      "dest": "/server.js"
-    },
-    {
-      "src": "/assets/(.*)",
-      "dest": "/client/assets/$1"
-    },
-    {
-      "src": "/favicon.ico",
-      "dest": "/client/favicon.ico"
-    },
-    {
-      "src": "/favicon-16x16.png",
-      "dest": "/client/favicon-16x16.png"
-    },
-    {
-      "src": "/favicon-32x32.png",
-      "dest": "/client/favicon-32x32.png"
-    },
-    {
-      "src": "/manifest.webmanifest",
-      "dest": "/client/manifest.webmanifest"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/client/$1"
+      "dest": "/server.js"
     }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  }
+  ]
 }
