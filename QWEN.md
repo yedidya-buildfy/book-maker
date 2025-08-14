@@ -64,4 +64,4 @@ The frontend PWA allows users to input story details, upload character images, t
     *   `manifest.webmanifest`: PWA manifest file defining name, icons, theme, etc.
 *   **Environment Variables:** API keys and configuration are managed via a `.env` file, loaded using the `dotenv` package.
 *   **Output:** Generated books (PDFs and intermediate images) are stored in the `output/` directory, organized by run ID.
-*   **Error Handling & Retries:** The server includes logic for retrying failed OpenAI API calls, particularly for rate limits, using exponential backoff. JSON parsing for LLM responses has been made more robust with fallback extraction methods.
+*   **Error Handling & Retries:** The server includes logic for retrying failed OpenAI API calls, particularly for rate limits, using exponential backoff. JSON parsing for LLM responses has been made more robust with fallback extraction methods. 
