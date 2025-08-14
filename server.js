@@ -394,10 +394,21 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
       log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasImage: !!ch.image, role: ch.role });
       
       const content = [
-        {role:'system', content:"You are a character analysis assistant for a children's book. Provide 6-10 concise bullet descriptors: age impression, facial features, hair, clothing style, color palette, and any distinctive details."},
+        {role:'system', content:`You are a character bible creator for children's books. Create ULTRA-DETAILED character descriptions for absolute visual consistency across all images.
+
+CRITICAL: Provide EXACT specifications for:
+- Age: specific age (e.g. "exactly 7 years old")  
+- Face: precise facial features, eye color, nose shape, mouth, expression
+- Hair: exact color, texture, length, style (be very specific)
+- Clothing: detailed outfit description including colors, patterns, accessories
+- Body: height, build, posture, distinctive features
+- Personality traits: reflected in posture and expression
+- Color palette: list exact colors used (hex codes if possible)
+
+This character MUST look identical in every single image. Be extremely detailed and specific.`},
         {role:'user', content: [
-          {"type":"text","text":`Character name: ${ch.name||'Unknown'}\nRole: ${ch.role||''}\nProvide bullet descriptors.`},
-          ch.image ? {"type":"image_url","image_url":{"url": ch.image }} : {"type":"text","text":"No image provided; infer from role."}
+          {"type":"text","text":`Character name: ${ch.name||'Unknown'}\nRole: ${ch.role||''}\n\nCreate an ultra-detailed character bible entry that will ensure perfect visual consistency across all illustrations. Include every visual detail needed for an artist to draw this character identically every time.`},
+          ch.image ? {"type":"image_url","image_url":{"url": ch.image }} : {"type":"text","text":"No image provided; create detailed character based on role and name."}
         ]}
       ];
       
@@ -419,32 +430,20 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
     const totalImages = numImages + 2; // story images + front cover + back cover
     log('info', 'PHASE START: Book planning');
     const planningPrompt = [
-      {role:'system', content:"You are a senior children's book art director. Output strict JSON only."},
-      {role:'user', content:[
-        {"type":"text","text":
-`Create an ULTRA-DETAILED JSON plan for a children's picture book with ${totalImages} total images in sequence:
-- Image 1: Front cover (big empty area for headline, NO TEXT in image, matching style)  
-- Images 2-${numImages + 1}: Story pages (${numImages} total)
-- Image ${totalImages}: Back cover (calm space for blurb/ISBN, NO TEXT in image)
+      {role:'system', content:"You are a children's book art director. Create a JSON plan with image descriptions. Output valid JSON only."},
+      {role:'user', content:`Create a JSON plan for ${totalImages} images:
+- Image 1: Front cover (flat 2D artwork, not book mockup)
+- Images 2-${numImages + 1}: Story scenes (${numImages} total)
+- Image ${totalImages}: Back cover (flat 2D artwork, not book mockup)
 
-For EACH image include these fields:
-- page: number (1, 2, 3, etc.)
-- title: descriptive title for the scene
-- description: detailed scene description
-- characters: array of character names present
-- environment: setting description
-- mood: emotional tone
-- composition: visual arrangement
-- palette: color scheme
-- props: important objects
-- continuity: connection to story flow
+Book: "${title}"
+Story: ${story || 'Create scenes from title'}
+Art Style: ${artStyle}
+Characters: ${analyses.map(a=>`${a.name} - ${a.analysis.substring(0,200)}...`).join('; ')}
 
-Make story scenes lively with background happenings (safe, age-appropriate). Keep tone warm, cozy, in ${artStyle} art style.
-Return JSON with single key "images" containing array of ${totalImages} image objects.`},
-        {"type":"text","text":"Book title: "+title},
-        {"type":"text","text":"Story outline: "+(story||'(not provided)')},
-        {"type":"text","text":"Character analyses:\n"+analyses.map(a=>`- ${a.name}: ${a.analysis}`).join('\n')}
-      ]}
+Return JSON: {"images": [{"page":1, "title":"scene name", "description":"detailed scene", "characters":["name1"], "environment":"setting"}]}
+
+Make ${totalImages} image objects with engaging scenes that tell the story.`}
     ];
     
     log('info', 'Calling OpenAI for book planning');
@@ -523,27 +522,63 @@ Return JSON with single key "images" containing array of ${totalImages} image ob
     }
 
     const charSummary = analyses.map(a => `${a.name}: ${a.analysis}`).join('\n');
-    const commonStyle = `${artStyle} art style, warm cozy lighting, soft textures, gentle outlines, child-safe, consistent character looks based on analyses.`;
+    const hasCharacterBoard = !!board;
 
-    function scenePrompt(imageObj) {
+    function scenePrompt(imageObj, imageIndex) {
+      const isFirstImage = imageIndex === 0;
+      const isLastImage = imageIndex === plan.images.length - 1;
+      
+      // Determine if this is a cover
+      const isCover = isFirstImage || isLastImage;
+      const coverType = isFirstImage ? 'FRONT COVER ARTWORK' : (isLastImage ? 'BACK COVER ARTWORK' : '');
+      
       const prompt = [
-        `${imageObj.title || 'Untitled Scene'}`,
-        `Description: ${imageObj.description || ''}`,
-        `Characters present: ${(imageObj.characters || []).join(', ')}`,
+        // Main description - emphasize SINGLE SCENE
+        isCover ? `${coverType} (flat 2D illustration, full-bleed portrait)` : `SINGLE SCENE: ${imageObj.title || 'Story Scene'}`,
+        `Scene: ${imageObj.description || ''}`,
+        
+        // Character references  
+        imageObj.characters && imageObj.characters.length > 0 ? `Characters: ${imageObj.characters.join(', ')}` : '',
+        hasCharacterBoard ? `Reference: match faces, hair, clothing and palette from the attached character board (internal)` : '',
+        `Character Bible:\n${charSummary}`,
+        
+        // Visual specifications
         `Environment: ${imageObj.environment || ''}`,
-        `Mood: ${imageObj.mood || ''}`,
+        `Lighting: ${imageObj.lighting || 'warm, consistent lighting'}`,
         `Composition: ${imageObj.composition || ''}`,
-        `Palette: ${imageObj.palette || ''}`,
+        `Color Palette: ${imageObj.palette || ''} (maintain consistency across all images)`,
         `Props: ${imageObj.props || ''}`,
         `Continuity: ${imageObj.continuity || ''}`,
-        `Character consistency:\n${charSummary}`,
-        commonStyle,
-        `IMPORTANT: Avoid any TEXT in the image.`
-      ].join('\n');
+        
+        // Style specifications
+        `Art Style: ${artStyle} - maintain absolute consistency`,
+        imageObj.style_notes ? `Style Notes: ${imageObj.style_notes}` : '',
+        
+        // Quality and constraints
+        `Quality: professional children's book illustration, consistent art style, warm cozy lighting, soft textures, gentle outlines, child-safe`,
+        
+        // Critical constraints
+        `CRITICAL CONSTRAINTS:`,
+        `- Show ONLY ONE SCENE, not multiple scenes or montages`,
+        `- NEVER include any text, letters, or words in the illustration`,
+        `- Maintain perfect character consistency using character bible`,
+        `- Keep lighting and color palette consistent with other images`,
+        isCover ? `- This is ${coverType.toLowerCase()}, NOT a photo of a book or book mockup` : '',
+        isCover ? `- Flat 2D illustration only, full-bleed portrait format` : '',
+        `- ${artStyle} style maintained throughout`,
+        
+        // Negative prompts
+        `AVOID: text, letters, words, signatures, watermarks, book mockups, 3D book renders, photo of book${isCover ? ', book covers with visible spines or thickness' : ''}, multiple scenes, scene montages, comic panels`,
+        
+        // Strong style enforcement at the end
+        `Make all as one scene, style: ${artStyle}`
+      ].filter(Boolean).join('\n');
       
-      log('debug', `Generated scene prompt for image ${imageObj.page}`, { 
+      log('debug', `Generated scene prompt for ${isCover ? coverType : 'story scene'} ${imageObj.page}`, { 
         title: imageObj.title, 
-        promptLength: prompt.length 
+        promptLength: prompt.length,
+        isCover,
+        hasCharacterBoard
       });
       return prompt;
     }
@@ -560,26 +595,49 @@ Return JSON with single key "images" containing array of ${totalImages} image ob
       doc.image(imagePath, 0, 0, { width: A4.w, height: A4.h });
     }
 
-    // Generate all images sequentially
-    log('info', `PHASE START: Generating ${plan.images.length} images sequentially`, { jobId });
-    for(let i = 0; i < plan.images.length; i++){
-      const imageObj = plan.images[i];
-      const imageNum = i + 1;
+    // Generate all images with limited concurrency
+    const CONCURRENCY_LIMIT = 3; // Generate max 3 images simultaneously
+    log('info', `PHASE START: Generating ${plan.images.length} images with concurrency ${CONCURRENCY_LIMIT}`, { jobId });
+    
+    async function generateSingleImage(imageObj, imageIndex) {
+      const imageNum = imageIndex + 1;
       
-      // Update progress for each image
+      // Update progress for this image
       updateJob(jobId, { 
-        completedSteps: 2 + i,
+        completedSteps: 2 + imageIndex,
         currentPhase: `Generating image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}...`,
-        progress: Math.round(((2 + i) / (plan.images.length + 3)) * 100)
+        progress: Math.round(((2 + imageIndex) / (plan.images.length + 3)) * 100)
       });
       
-      log('info', `Generating image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}`, { jobId });
-      const buf = await openAIImage(scenePrompt(imageObj));
+      log('info', `Starting generation of image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}`, { jobId });
+      const buf = await openAIImage(scenePrompt(imageObj, imageIndex));
       const imagePath = path.join(outDir, `image-${String(imageNum).padStart(2,'0')}.png`);
       fs.writeFileSync(imagePath, buf);
-      addFull(imagePath);
-      log('info', `Image ${imageNum} generated and added to PDF`, { jobId });
+      log('info', `Image ${imageNum} generated successfully`, { jobId });
+      
+      return { imagePath, imageIndex };
     }
+    
+    // Process images with limited concurrency
+    const imageResults = [];
+    for (let i = 0; i < plan.images.length; i += CONCURRENCY_LIMIT) {
+      const batch = plan.images.slice(i, i + CONCURRENCY_LIMIT);
+      const batchPromises = batch.map((imageObj, batchIndex) => 
+        generateSingleImage(imageObj, i + batchIndex)
+      );
+      
+      log('info', `Processing batch ${Math.floor(i/CONCURRENCY_LIMIT) + 1} with ${batch.length} images`, { jobId });
+      const batchResults = await Promise.all(batchPromises);
+      imageResults.push(...batchResults);
+      
+      log('info', `Batch ${Math.floor(i/CONCURRENCY_LIMIT) + 1} completed`, { jobId });
+    }
+    
+    // Add all images to PDF in correct order
+    log('info', 'Adding all images to PDF in correct order', { jobId });
+    imageResults
+      .sort((a, b) => a.imageIndex - b.imageIndex)
+      .forEach(({ imagePath }) => addFull(imagePath));
     log('info', 'PHASE END: All images generated and added to PDF', { jobId });
 
     // Finalize the PDF

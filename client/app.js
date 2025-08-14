@@ -67,11 +67,18 @@ els.artStyle.addEventListener('change', ()=> {
 });
 
 function gather(){
-  const characters = [...document.querySelectorAll('.char-card')].map(c=> ({
-    name: c.querySelector('.ch-name').value.trim(),
-    role: c.querySelector('.ch-role').value.trim(),
-    image: c.querySelector('img').src || ''
-  }));
+  const characters = [...document.querySelectorAll('.char-card')].map(c=> {
+    const img = c.querySelector('img');
+    const imgSrc = img.src || '';
+    // Only include image if it's a valid data URL (base64) or actual image, not just the base URL
+    const hasValidImage = imgSrc && imgSrc !== window.location.origin + '/' && imgSrc.startsWith('data:image/');
+    
+    return {
+      name: c.querySelector('.ch-name').value.trim(),
+      role: c.querySelector('.ch-role').value.trim(),
+      image: hasValidImage ? imgSrc : ''
+    };
+  });
   
   let artStyle = els.artStyle.value || 'Watercolor';
   if (artStyle === 'Custom') {
