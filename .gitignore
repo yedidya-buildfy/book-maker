@@ -1,0 +1,21 @@
+# Logs
+*.log
+
+# Environment files
+.env
+
+# Output files
+output/
+
+# Node modules
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
