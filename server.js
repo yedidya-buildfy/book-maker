@@ -31,9 +31,7 @@ app.use(express.json({limit: '40mb'}));
 
 // Static file serving
 app.use('/output', express.static('output'));
-app.use(express.static('.', {
-  index: ['index.html']
-}));
+app.use(express.static('client'));
 
 // Job management system
 const jobs = new Map();
