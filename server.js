@@ -47,6 +47,42 @@ app.use(express.static('client', {
   }
 }));
 
+// Explicitly serve static files (needed for Vercel)
+app.get('/app.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.sendFile(path.join(process.cwd(), 'client', 'app.js'));
+});
+
+app.get('/style.css', (req, res) => {
+  res.setHeader('Content-Type', 'text/css');
+  res.sendFile(path.join(process.cwd(), 'client', 'style.css'));
+});
+
+app.get('/favicon.ico', (req, res) => {
+  res.setHeader('Content-Type', 'image/x-icon');
+  res.sendFile(path.join(process.cwd(), 'client', 'favicon.ico'));
+});
+
+app.get('/favicon-16x16.png', (req, res) => {
+  res.setHeader('Content-Type', 'image/png');
+  res.sendFile(path.join(process.cwd(), 'client', 'favicon-16x16.png'));
+});
+
+app.get('/favicon-32x32.png', (req, res) => {
+  res.setHeader('Content-Type', 'image/png');
+  res.sendFile(path.join(process.cwd(), 'client', 'favicon-32x32.png'));
+});
+
+app.get('/assets/icons/icon-192.png', (req, res) => {
+  res.setHeader('Content-Type', 'image/png');
+  res.sendFile(path.join(process.cwd(), 'client', 'assets', 'icons', 'icon-192.png'));
+});
+
+app.get('/assets/icons/icon-512.png', (req, res) => {
+  res.setHeader('Content-Type', 'image/png');
+  res.sendFile(path.join(process.cwd(), 'client', 'assets', 'icons', 'icon-512.png'));
+});
+
 // Explicit route handlers
 app.get('/', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'client', 'index.html'));

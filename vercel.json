@@ -16,8 +16,28 @@
       "dest": "/server.js"
     },
     {
+      "src": "/assets/(.*)",
+      "dest": "/client/assets/$1"
+    },
+    {
+      "src": "/favicon.ico",
+      "dest": "/client/favicon.ico"
+    },
+    {
+      "src": "/favicon-16x16.png",
+      "dest": "/client/favicon-16x16.png"
+    },
+    {
+      "src": "/favicon-32x32.png",
+      "dest": "/client/favicon-32x32.png"
+    },
+    {
+      "src": "/manifest.webmanifest",
+      "dest": "/client/manifest.webmanifest"
+    },
+    {
       "src": "/(.*)",
-      "dest": "/server.js"
+      "dest": "/client/$1"
     }
   ],
   "env": {
