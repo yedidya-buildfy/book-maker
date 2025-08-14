@@ -63,11 +63,19 @@
     },
     {
       "src": "/",
-      "dest": "/client/index.html"
+      "dest": "/client/index.html",
+      "headers": {
+        "Content-Type": "text/html"
+      }
     },
     {
       "src": "/(.*)",
       "dest": "/client/$1"
     }
-  ]
+  ],
+  "functions": {
+    "server.js": {
+      "maxDuration": 300
+    }
+  }
 }

@@ -49,6 +49,14 @@ if (process.env.NODE_ENV !== 'production') {
       }
     }
   }));
+} else {
+  // In production, log the environment
+  log('info', 'Production environment detected', {
+    NODE_ENV: process.env.NODE_ENV,
+    VERCEL: process.env.VERCEL,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    cwd: process.cwd()
+  });
 }
 
 // Explicitly serve static files (needed for Vercel)
@@ -108,18 +116,36 @@ app.get('/favicon-32x32.png', (req, res) => {
 });
 
 app.get('/assets/icons/icon-192.png', (req, res) => {
+  log('debug', 'Serving icon-192.png');
   res.setHeader('Content-Type', 'image/png');
-  res.sendFile(path.join(process.cwd(), 'client', 'assets', 'icons', 'icon-192.png'));
+  res.sendFile(path.join(process.cwd(), 'client', 'assets', 'icons', 'icon-192.png'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve icon-192.png', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/assets/icons/icon-512.png', (req, res) => {
+  log('debug', 'Serving icon-512.png');
   res.setHeader('Content-Type', 'image/png');
-  res.sendFile(path.join(process.cwd(), 'client', 'assets', 'icons', 'icon-512.png'));
+  res.sendFile(path.join(process.cwd(), 'client', 'assets', 'icons', 'icon-512.png'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve icon-512.png', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 // Explicit route handlers
 app.get('/', (req, res) => {
-  res.sendFile(path.join(process.cwd(), 'client', 'index.html'));
+  log('debug', 'Serving index.html');
+  res.sendFile(path.join(process.cwd(), 'client', 'index.html'), (err) => {
+    if (err) {
+      log('error', 'Failed to serve index.html', { error: err.message });
+      res.status(404).send('File not found');
+    }
+  });
 });
 
 app.get('/manifest.webmanifest', (req, res) => {
@@ -139,11 +165,18 @@ app.get('*', (req, res) => {
   
   // Try to serve from client directory
   const filePath = path.join(process.cwd(), 'client', req.path);
+  log('debug', 'File path check', { 
+    requestedPath: req.path, 
+    fullPath: filePath, 
+    cwd: process.cwd(),
+    exists: fs.existsSync(filePath)
+  });
+  
   if (fs.existsSync(filePath)) {
     log('debug', 'Serving file from client directory', { path: req.path });
     res.sendFile(filePath);
   } else {
-    log('warn', 'File not found', { path: req.path });
+    log('warn', 'File not found', { path: req.path, fullPath: filePath });
     res.status(404).send('File not found');
   }
 });
@@ -804,5 +837,16 @@ app.listen(PORT, ()=> {
   log('info', '  POST /api/generate-story-idea - Generate story from scratch');
   log('info', '  POST /api/generate - Generate complete book');
   log('info', '  GET /output/* - Serve generated files');
+  
+  // Log directory structure for debugging
+  log('info', 'Directory structure:', { 
+    cwd: process.cwd(),
+    clientExists: fs.existsSync('client'),
+    clientContents: fs.readdirSync('client'),
+    styleExists: fs.existsSync('client/style.css'),
+    appExists: fs.existsSync('client/app.js'),
+    indexExists: fs.existsSync('client/index.html')
+  });
+  
   log('info', 'Server ready to accept requests');
 });
