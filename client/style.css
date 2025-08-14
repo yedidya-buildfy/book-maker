@@ -1,27 +1,30 @@
-/* Clean minimal styles */
+/* Clean minimal styles - optimized for accessibility and older users */
 :root{
-  --bg:#fff8ef; --card:#ffffff; --ink:#2a2a2a; --muted:#6b6b6b;
-  --brand:#f8b84e; --accent:#3a86ff; --radius:14px;
+  --bg:#ffffff; --card:#ffffff; --ink:#1a1a1a; --muted:#5d4e37;
+  --brand:#d4af37; --accent:#8b6914; --radius:14px; --gold-light:#f4e99b; --gold-dark:#8b6914;
 }
 *{box-sizing:border-box}
-body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans; color:var(--ink); background:var(--bg); }
+body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans; color:var(--ink); background:var(--bg); font-size:16px; line-height:1.5; }
 header, footer{ display:flex; align-items:center; justify-content:space-between; padding:16px 20px; }
-header h1{ margin:0; font-size:22px; }
+header{ background:linear-gradient(135deg, var(--gold-light), var(--brand)); border-bottom:2px solid var(--accent); }
+header h1{ margin:0; font-size:26px; font-weight:700; }
 main{ max-width:900px; margin:0 auto; padding:16px; }
 
-.card{ background:var(--card); border-radius:var(--radius); padding:16px; margin:16px 0; box-shadow:0 4px 24px rgba(0,0,0,0.06); }
-label{ display:block; margin:10px 0; font-weight:600; }
-input, textarea{ width:100%; padding:10px 12px; margin-top:6px; border-radius:10px; border:1px solid #ddd; background:#fff; font-size:16px; }
+.card{ background:var(--card); border-radius:var(--radius); padding:20px; margin:16px 0; box-shadow:0 4px 24px rgba(0,0,0,0.06); border:2px solid var(--gold-light); }
+.card h2{ font-size:20px; margin-bottom:12px; color:var(--ink); }
+label{ display:block; margin:12px 0; font-weight:700; font-size:16px; color:var(--ink); }
+input, textarea{ width:100%; padding:10px 12px; margin-top:6px; border-radius:10px; border:1px solid var(--gold-light); background:#fff; font-size:16px; }
+input:focus, textarea:focus{ outline:none; border-color:var(--accent); box-shadow:0 0 0 2px rgba(212,175,55,0.2); }
 textarea{ resize:vertical; }
 
-button{ border:0; padding:10px 14px; border-radius:12px; background:var(--accent); color:white; font-weight:700; cursor:pointer; box-shadow:0 6px 14px rgba(58,134,255,0.25); }
-button.secondary{ background:var(--brand); color:#3a2a00; box-shadow:none; }
+button{ border:0; padding:12px 16px; border-radius:12px; background:var(--accent); color:white; font-weight:700; cursor:pointer; box-shadow:0 6px 14px rgba(139,105,20,0.3); font-size:16px; }
+button.secondary{ background:var(--brand); color:#1a1a1a; box-shadow:0 3px 8px rgba(212,175,55,0.2); font-weight:600; }
 button:disabled{ opacity:0.6; cursor:not-allowed; }
 
 .char-list{ display:grid; gap:12px; }
-.char-card{ border:1px dashed #ccc; border-radius:12px; padding:12px; background:#fffdf8; }
+.char-card{ border:1px dashed var(--gold-light); border-radius:12px; padding:12px; background:#fefdf9; }
 .char-card .row{ display:flex; gap:12px; align-items:center; }
-.char-card img{ width:84px; height:84px; object-fit:cover; border-radius:10px; border:1px solid #eee; }
+.char-card img{ width:84px; height:84px; object-fit:cover; border-radius:10px; border:2px solid var(--gold-light); }
 .char-card .meta{ flex:1; }
 
 .hint{ color:var(--muted); }
@@ -33,7 +36,14 @@ button:disabled{ opacity:0.6; cursor:not-allowed; }
 .spinner{ width:18px; height:18px; border:3px solid #ddd; border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
 @keyframes spin{ to{ transform:rotate(360deg);} }
 
-@media (prefers-color-scheme: dark){
-  :root{ --card:#141414; --bg:#0b0b0b; --ink:#f4f4f4; --muted:#9aa3ab; }
-  input, textarea{ background:#111; border-color:#333; color:#f4f4f4; }
-}
+/* Library styles */
+.library-list{ display:grid; gap:16px; }
+.library-item{ display:flex; align-items:center; justify-content:space-between; padding:16px; border:1px solid var(--gold-light); border-radius:12px; background:#fefdf9; }
+.library-item-info{ flex:1; }
+.library-item-title{ font-weight:700; font-size:16px; margin-bottom:4px; }
+.library-item-meta{ color:var(--muted); font-size:14px; }
+.library-item-actions{ display:flex; gap:8px; }
+.library-item button{ padding:8px 12px; font-size:14px; }
+.empty-message{ text-align:center; color:var(--muted); padding:40px 20px; }
+
+/* Force light mode only - better for accessibility and older users */

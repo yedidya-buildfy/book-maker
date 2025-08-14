@@ -385,16 +385,19 @@ app.post('/api/generate', async (req, res) => {
 async function generateBookAsync(jobId, { title, story, numImages, artStyle, characters }) {
   try {
 
-    // 1) Character analyses (image->text): gpt-4o with vision
-    updateJob(jobId, { currentPhase: `Analyzing ${characters.length} characters...`, completedSteps: 0 });
-    log('info', 'PHASE START: Character analysis', { jobId });
+    // 1) Character analyses (image->text): only for characters with images
+    const charactersWithImages = characters.filter(ch => ch.image && ch.image.trim());
+    updateJob(jobId, { currentPhase: `Analyzing ${charactersWithImages.length} characters with images...`, completedSteps: 0 });
+    log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithImages: charactersWithImages.length });
+    
     const analyses = [];
-    for(let i = 0; i < characters.length; i++){
-      const ch = characters[i];
-      log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasImage: !!ch.image, role: ch.role });
-      
-      const content = [
-        {role:'system', content:`You are a character bible creator for children's books. Create ULTRA-DETAILED character descriptions for absolute visual consistency across all images.
+    if (charactersWithImages.length > 0) {
+      for(let i = 0; i < charactersWithImages.length; i++){
+        const ch = charactersWithImages[i];
+        log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasImage: true, role: ch.role });
+        
+        const content = [
+          {role:'system', content:`You are a character bible creator for children's books. Create ULTRA-DETAILED character descriptions for absolute visual consistency across all images.
 
 CRITICAL: Provide EXACT specifications for:
 - Age: specific age (e.g. "exactly 7 years old")  
@@ -406,22 +409,23 @@ CRITICAL: Provide EXACT specifications for:
 - Color palette: list exact colors used (hex codes if possible)
 
 This character MUST look identical in every single image. Be extremely detailed and specific.`},
-        {role:'user', content: [
-          {"type":"text","text":`Character name: ${ch.name||'Unknown'}\nRole: ${ch.role||''}\n\nCreate an ultra-detailed character bible entry that will ensure perfect visual consistency across all illustrations. Include every visual detail needed for an artist to draw this character identically every time.`},
-          ch.image ? {"type":"image_url","image_url":{"url": ch.image }} : {"type":"text","text":"No image provided; create detailed character based on role and name."}
-        ]}
-      ];
-      
-      try {
-        // Use gpt-4o only if image is provided (for vision), otherwise use cheaper model
-        const modelToUse = ch.image ? 'gpt-4o' : 'gpt-3.5-turbo';
-        const analysis = await openAIChat(content, modelToUse);
-        analyses.push({ name: ch.name, role: ch.role, analysis });
-        log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length, modelUsed: modelToUse });
-      } catch (error) {
-        log('error', `Character analysis failed for ${ch.name}`, { error: error.message });
-        throw error;
+          {role:'user', content: [
+            {"type":"text","text":`Character name: ${ch.name||'Unknown'}\nRole: ${ch.role||''}\n\nCreate an ultra-detailed character bible entry that will ensure perfect visual consistency across all illustrations. Include every visual detail needed for an artist to draw this character identically every time.`},
+            {"type":"image_url","image_url":{"url": ch.image }}
+          ]}
+        ];
+        
+        try {
+          const analysis = await openAIChat(content, 'gpt-4o'); // Always use gpt-4o for image analysis
+          analyses.push({ name: ch.name, role: ch.role, analysis });
+          log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length });
+        } catch (error) {
+          log('error', `Character analysis failed for ${ch.name}`, { error: error.message });
+          throw error;
+        }
       }
+    } else {
+      log('info', 'No characters with images found, skipping character analysis');
     }
     updateJob(jobId, { completedSteps: 1, currentPhase: 'Planning book structure...' });
     log('info', 'PHASE END: Character analysis', { characterCount: analyses.length, jobId });
@@ -429,6 +433,10 @@ This character MUST look identical in every single image. Be extremely detailed 
     // 2) Planning (JSON): gpt-4o
     const totalImages = numImages + 2; // story images + front cover + back cover
     log('info', 'PHASE START: Book planning');
+    const characterInfo = analyses.length > 0 
+      ? `Characters with detailed bibles: ${analyses.map(a=>`${a.name} - ${a.analysis.substring(0,200)}...`).join('; ')}`
+      : `Characters from story: ${characters.map(c => `${c.name} (${c.role})`).join(', ') || 'Create characters from story context'}`;
+
     const planningPrompt = [
       {role:'system', content:"You are a children's book art director. Create a JSON plan with image descriptions. Output valid JSON only."},
       {role:'user', content:`Create a JSON plan for ${totalImages} images:
@@ -439,7 +447,7 @@ This character MUST look identical in every single image. Be extremely detailed 
 Book: "${title}"
 Story: ${story || 'Create scenes from title'}
 Art Style: ${artStyle}
-Characters: ${analyses.map(a=>`${a.name} - ${a.analysis.substring(0,200)}...`).join('; ')}
+${characterInfo}
 
 Return JSON: {"images": [{"page":1, "title":"scene name", "description":"detailed scene", "characters":["name1"], "environment":"setting"}]}
 
@@ -521,7 +529,9 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
       log('info', 'Character board saved');
     }
 
-    const charSummary = analyses.map(a => `${a.name}: ${a.analysis}`).join('\n');
+    const charSummary = analyses.length > 0 
+      ? analyses.map(a => `${a.name}: ${a.analysis}`).join('\n')
+      : characters.map(c => `${c.name}: ${c.role}`).join('\n');
     const hasCharacterBoard = !!board;
 
     function scenePrompt(imageObj, imageIndex) {
@@ -540,7 +550,7 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
         // Character references  
         imageObj.characters && imageObj.characters.length > 0 ? `Characters: ${imageObj.characters.join(', ')}` : '',
         hasCharacterBoard ? `Reference: match faces, hair, clothing and palette from the attached character board (internal)` : '',
-        `Character Bible:\n${charSummary}`,
+        analyses.length > 0 ? `Character Bible:\n${charSummary}` : `Character Info:\n${charSummary}`,
         
         // Visual specifications
         `Environment: ${imageObj.environment || ''}`,
@@ -583,7 +593,10 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
       return prompt;
     }
 
-    const pdfPath = path.join(outDir, 'book.pdf');
+    // Create PDF filename from book title (sanitize for filesystem)
+    const sanitizedTitle = title.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_').substring(0, 50);
+    const pdfFilename = sanitizedTitle ? `${sanitizedTitle}.pdf` : 'book.pdf';
+    const pdfPath = path.join(outDir, pdfFilename);
     const doc = new PDFDocument({ autoFirstPage: false });
     const stream = fs.createWriteStream(pdfPath);
     doc.pipe(stream);
@@ -653,7 +666,7 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
     await new Promise(r=>stream.on('finish', r));
     log('info', 'PHASE END: PDF finalized and written to disk', { pdfPath, jobId });
 
-    const result = { pdfUrl: `/output/${runId}/book.pdf`, runId };
+    const result = { pdfUrl: `/output/${runId}/${pdfFilename}`, runId };
     completeJob(jobId, result);
     log('info', 'Book generation completed successfully', { result, jobId });
     

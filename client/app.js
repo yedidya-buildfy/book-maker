@@ -13,7 +13,9 @@ const els = {
   loader: document.getElementById('loader'),
   loaderText: document.getElementById('loaderText'),
   result: document.getElementById('result'),
-  installBtn: document.getElementById('installBtn')
+  installBtn: document.getElementById('installBtn'),
+  libraryList: document.getElementById('libraryList'),
+  emptyLibrary: document.getElementById('emptyLibrary')
 };
 
 function addCharacterCard(data){
@@ -174,6 +176,10 @@ async function pollJobProgress(jobId) {
       setLoading(false, 'Done!');
       if (job.result && job.result.pdfUrl) {
         els.result.innerHTML = `<a href="${job.result.pdfUrl}" download>Download PDF</a>`;
+        
+        // Save to library
+        const bookData = gather();
+        saveToLibrary(bookData, job.result.pdfUrl);
       }
       els.generateBtn.disabled = false;
       els.status.textContent = 'Book generated successfully!';
@@ -192,6 +198,92 @@ async function pollJobProgress(jobId) {
     els.generateBtn.disabled = false;
   }
 }
+
+// Library functions
+function saveToLibrary(bookData, pdfUrl) {
+  try {
+    const library = getLibrary();
+    const bookEntry = {
+      id: Date.now().toString(),
+      title: bookData.title,
+      story: bookData.story,
+      artStyle: bookData.artStyle,
+      numImages: bookData.numImages,
+      characterCount: bookData.characters.length,
+      pdfUrl: pdfUrl,
+      createdAt: new Date().toISOString()
+    };
+    
+    library.unshift(bookEntry); // Add to beginning
+    
+    // Keep only last 50 books to avoid localStorage limits
+    if (library.length > 50) {
+      library.splice(50);
+    }
+    
+    localStorage.setItem('bookLibrary', JSON.stringify(library));
+    console.log('Book saved to library:', bookEntry.title);
+  } catch (error) {
+    console.error('Failed to save book to library:', error);
+  }
+}
+
+function getLibrary() {
+  try {
+    const stored = localStorage.getItem('bookLibrary');
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.error('Failed to load library:', error);
+    return [];
+  }
+}
+
+function deleteFromLibrary(bookId) {
+  try {
+    const library = getLibrary();
+    const filteredLibrary = library.filter(book => book.id !== bookId);
+    localStorage.setItem('bookLibrary', JSON.stringify(filteredLibrary));
+    showLibrary(); // Refresh the display
+  } catch (error) {
+    console.error('Failed to delete book from library:', error);
+  }
+}
+
+function formatDate(isoString) {
+  const date = new Date(isoString);
+  return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+}
+
+function showLibrary() {
+  const library = getLibrary();
+  
+  if (library.length === 0) {
+    els.libraryList.style.display = 'none';
+    els.emptyLibrary.hidden = false;
+  } else {
+    els.libraryList.style.display = 'grid';
+    els.emptyLibrary.hidden = true;
+    
+    els.libraryList.innerHTML = library.map(book => `
+      <div class="library-item">
+        <div class="library-item-info">
+          <div class="library-item-title">${book.title}</div>
+          <div class="library-item-meta">
+            ${book.artStyle} style • ${book.numImages} images • ${book.characterCount} characters<br>
+            Created: ${formatDate(book.createdAt)}
+          </div>
+        </div>
+        <div class="library-item-actions">
+          <button onclick="window.open('${book.pdfUrl}', '_blank')" class="secondary">View PDF</button>
+          <button onclick="deleteFromLibrary('${book.id}')" style="background: #ff4757; color: white;">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  }
+}
+
+// Load library on page load
+showLibrary();
 
 // PWA install
 let deferredPrompt=null;
