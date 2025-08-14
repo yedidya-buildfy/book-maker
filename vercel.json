@@ -72,10 +72,5 @@
       "src": "/(.*)",
       "dest": "/client/$1"
     }
-  ],
-  "functions": {
-    "server.js": {
-      "maxDuration": 300
-    }
-  }
+  ]
 }
