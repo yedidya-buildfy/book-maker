@@ -470,89 +470,18 @@ app.post('/api/generate', async (req, res) => {
 async function generateBookAsync(jobId, { title, story, numImages, artStyle, characters }) {
   try {
 
-    // 1) Character analyses (text-based): for all characters with name/description
-    const charactersWithInfo = characters.filter(ch => 
-      (ch.name && ch.name.trim()) || 
-      (ch.description && ch.description.trim()) || 
-      (ch.age && ch.age.trim()) ||
-      (ch.role && ch.role.trim())
-    );
-    updateJob(jobId, { currentPhase: `Analyzing ${charactersWithInfo.length} characters...`, completedSteps: 0 });
-    log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithInfo: charactersWithInfo.length });
+    // 1) Character analyses - TEMPORARILY SKIPPED FOR DEBUGGING
+    log('info', 'PHASE START: Character analysis (SKIPPED FOR DEBUGGING)', { jobId, totalCharacters: characters.length });
     
-    const analyses = [];
-    const phaseStartTime = Date.now();
-    if (charactersWithInfo.length > 0) {
-      // Safety: limit to max 5 characters to prevent infinite loops
-      const maxCharacters = Math.min(charactersWithInfo.length, 5);
-      log('info', `Processing ${maxCharacters} characters (limited for safety)`, { requested: charactersWithInfo.length, processing: maxCharacters });
-      
-      for(let i = 0; i < maxCharacters; i++){
-        // Safety check: if entire phase takes too long, break out
-        if (Date.now() - phaseStartTime > 120000) { // 2 minutes total
-          log('warn', 'Character analysis phase timeout, skipping remaining characters', { 
-            processed: i, 
-            remaining: maxCharacters - i,
-            totalTime: Date.now() - phaseStartTime 
-          });
-          break;
-        }
-        
-        const ch = charactersWithInfo[i];
-        log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasInfo: true, role: ch.role });
-        
-        const characterInfo = [
-          `Name: ${ch.name || 'Unnamed Character'}`,
-          `Age: ${ch.age || 'Age not specified'}`,
-          `Description: ${ch.description || 'No description provided'}`,
-          `Role: ${ch.role || 'Character role not specified'}`,
-          ch.image ? 'Has reference image' : 'No reference image'
-        ].join('\n');
-        
-        const content = [
-          {role:'system', content:`You are a character bible creator for children's books. Create detailed character descriptions for visual consistency across all illustrations in ${artStyle} art style.
-
-Create a character bible entry with:
-- Physical appearance (age-appropriate for children's books)
-- Facial features, hair style and color
-- Typical clothing and color palette
-- Personality traits that show in their expression
-- Any cultural or unique characteristics mentioned
-
-Make it detailed enough for an artist to draw the character consistently, but child-friendly and appropriate for the ${artStyle} art style.`},
-          {role:'user', content: `Create a detailed character bible for a children's book character based on this information:
-
-${characterInfo}
-
-Art Style: ${artStyle}
-
-Provide a comprehensive description that will ensure this character looks identical in every illustration.`}
-        ];
-        
-        try {
-          log('info', `Starting OpenAI analysis for ${ch.name}`, { characterInfo });
-          
-          // Add timeout wrapper to prevent infinite hanging
-          const analysisPromise = openAIChat(content, 'gpt-5-nano');
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Character analysis timeout after 30 seconds')), 30000)
-          );
-          
-          const analysis = await Promise.race([analysisPromise, timeoutPromise]);
-          analyses.push({ name: ch.name, role: ch.role, analysis });
-          log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length });
-        } catch (error) {
-          log('error', `Character analysis failed for ${ch.name}, using fallback description`, { error: error.message });
-          // Fallback: create basic character description
-          const fallbackAnalysis = `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style with warm, child-friendly features.`;
-          analyses.push({ name: ch.name, role: ch.role, analysis: fallbackAnalysis });
-        }
-      }
-    } else {
-      log('info', 'No characters with information found, skipping character analysis');
-    }
+    // Create simple character summaries without OpenAI analysis
+    const analyses = characters.map(ch => ({
+      name: ch.name || 'Character',
+      role: ch.role || 'Character',
+      analysis: `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style.`
+    }));
+    
     updateJob(jobId, { completedSteps: 1, currentPhase: 'Planning book structure...' });
-    log('info', 'PHASE END: Character analysis', { characterCount: analyses.length, jobId });
+    log('info', 'PHASE END: Character analysis (SKIPPED)', { characterCount: analyses.length, jobId });
 
     // 2) Planning (JSON): gpt-4o
     const totalImages = numImages + 2; // story images + front cover + back cover

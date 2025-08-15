@@ -70,7 +70,7 @@ function getRandomCharacter() {
     'gentle and caring', 'adventurous and bold', 'friendly and loyal', 'imaginative and artistic',
     'thoughtful and wise', 'playful and silly', 'determined and strong', 'cheerful and optimistic'
   ];
-  const cultures = ['', 'Jewish'];
+  const cultures = ['Jewish'];
   const interests = ['loves books', 'loves animals', 'loves art', 'loves music', 'loves sports', 'loves science', 'loves cooking', 'loves nature'];
   const roles = ['main character', 'best friend', 'helpful sibling', 'wise grandparent', 'fun teacher', 'loyal pet', 'magical helper'];
   
