@@ -508,7 +508,14 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
     ];
     
     log('info', 'Calling OpenAI for book planning');
-    const planText = await openAIChat(planningPrompt, 'gpt-5-nano');
+    
+    // Add timeout protection for planning phase
+    const planningPromise = openAIChat(planningPrompt, 'gpt-5-nano');
+    const planningTimeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Planning phase timeout after 45 seconds')), 45000)
+    );
+    
+    const planText = await Promise.race([planningPromise, planningTimeoutPromise]);
     log('debug', 'Raw planning response', { responseLength: planText.length, preview: planText.substring(0, 300) });
     
     let plan;
