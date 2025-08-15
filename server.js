@@ -4,10 +4,28 @@ import fs from 'fs';
 import path from 'path';
 import PDFDocument from 'pdfkit';
 import Jimp from 'jimp';
+import admin from 'firebase-admin';
+import crypto from 'crypto';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+// Initialize Firebase Admin (optional - can work without it)
+let bucket = null;
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+    });
+    bucket = admin.storage().bucket();
+    console.log('Firebase Storage initialized');
+  }
+} catch (error) {
+  console.log('Firebase not configured, PDFs will be returned as downloads');
+}
 
 // Enhanced logging
 function log(level, message, data = null) {
@@ -240,6 +258,49 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
       log('info', `Waiting ${waitTime}ms before image retry ${attempt + 1}/${maxRetries}`);
       await sleep(waitTime);
     }
+  }
+}
+
+// ---- Firebase Storage Helper ----
+async function uploadPDFToStorage(pdfBuffer, filename) {
+  if (!bucket) {
+    log('info', 'Firebase not configured, returning PDF as base64');
+    return {
+      type: 'download',
+      data: pdfBuffer.toString('base64'),
+      filename: filename
+    };
+  }
+
+  try {
+    const file = bucket.file(`books/${Date.now()}-${filename}`);
+    await file.save(pdfBuffer, {
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: {
+          firebaseStorageDownloadTokens: crypto.randomUUID()
+        }
+      }
+    });
+
+    // Make file publicly readable
+    await file.makePublic();
+
+    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
+    log('info', 'PDF uploaded to Firebase Storage', { filename, url: publicUrl });
+    
+    return {
+      type: 'url',
+      url: publicUrl,
+      filename: filename
+    };
+  } catch (error) {
+    log('error', 'Failed to upload to Firebase, falling back to download', { error: error.message });
+    return {
+      type: 'download',
+      data: pdfBuffer.toString('base64'),
+      filename: filename
+    };
   }
 }
 
@@ -519,7 +580,8 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
     // 3) Generate images and build PDF simultaneously
     log('info', 'PHASE START: Image generation and PDF creation');
     const runId = Date.now().toString(36);
-    const outDir = path.join('output', runId);
+    // Use /tmp directory for serverless environments
+    const outDir = path.join('/tmp', runId);
     fs.mkdirSync(outDir, { recursive: true });
     log('info', `Created output directory: ${outDir}`);
 
@@ -668,9 +730,21 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
     await new Promise(r=>stream.on('finish', r));
     log('info', 'PHASE END: PDF finalized and written to disk', { pdfPath, jobId });
 
-    const result = { pdfUrl: `/output/${runId}/${pdfFilename}`, runId };
+    // Read PDF file and upload to storage or return as download
+    const pdfBuffer = fs.readFileSync(pdfPath);
+    const pdfResult = await uploadPDFToStorage(pdfBuffer, pdfFilename);
+    
+    const result = { 
+      pdf: pdfResult,
+      runId 
+    };
     completeJob(jobId, result);
-    log('info', 'Book generation completed successfully', { result, jobId });
+    log('info', 'Book generation completed successfully', { 
+      filename: pdfFilename, 
+      pdfSize: pdfBuffer.length, 
+      storageType: pdfResult.type,
+      jobId 
+    });
     
   } catch(err){
     failJob(jobId, err);

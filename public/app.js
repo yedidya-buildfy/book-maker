@@ -174,12 +174,24 @@ async function pollJobProgress(jobId) {
     
     if (job.status === 'completed') {
       setLoading(false, 'Done!');
-      if (job.result && job.result.pdfUrl) {
-        els.result.innerHTML = `<a href="${job.result.pdfUrl}" download>Download PDF</a>`;
+      if (job.result && job.result.pdf) {
+        const pdf = job.result.pdf;
+        let pdfUrl = '';
+        
+        if (pdf.type === 'url') {
+          // Firebase Storage URL - direct link
+          pdfUrl = pdf.url;
+          els.result.innerHTML = `<a href="${pdf.url}" target="_blank">View PDF</a> | <a href="${pdf.url}" download="${pdf.filename}">Download PDF</a>`;
+        } else if (pdf.type === 'download') {
+          // Base64 data - create blob URL
+          const pdfBlob = new Blob([Uint8Array.from(atob(pdf.data), c => c.charCodeAt(0))], {type: 'application/pdf'});
+          pdfUrl = URL.createObjectURL(pdfBlob);
+          els.result.innerHTML = `<a href="${pdfUrl}" target="_blank">View PDF</a> | <a href="${pdfUrl}" download="${pdf.filename}">Download PDF</a>`;
+        }
         
         // Save to library
         const bookData = gather();
-        saveToLibrary(bookData, job.result.pdfUrl);
+        saveToLibrary(bookData, pdfUrl, pdf.filename);
       }
       els.generateBtn.disabled = false;
       els.status.textContent = 'Book generated successfully!';
@@ -200,7 +212,7 @@ async function pollJobProgress(jobId) {
 }
 
 // Library functions
-function saveToLibrary(bookData, pdfUrl) {
+function saveToLibrary(bookData, pdfUrl, filename = null) {
   try {
     const library = getLibrary();
     const bookEntry = {
@@ -211,6 +223,7 @@ function saveToLibrary(bookData, pdfUrl) {
       numImages: bookData.numImages,
       characterCount: bookData.characters.length,
       pdfUrl: pdfUrl,
+      filename: filename || (bookData.title + '.pdf'),
       createdAt: new Date().toISOString()
     };
     
