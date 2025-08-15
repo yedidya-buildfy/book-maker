@@ -417,12 +417,10 @@ Make it creative, educational, and fun for children!`}
       }
     }
 
-    // Ensure numImages is within range
-    if (!storyIdea.numImages || storyIdea.numImages < 4 || storyIdea.numImages > 8) {
-      const oldValue = storyIdea.numImages;
-      storyIdea.numImages = Math.floor(Math.random() * 5) + 4; // 4-8
-      log('info', 'Adjusted numImages to valid range', { from: oldValue, to: storyIdea.numImages });
-    }
+    // Always randomize numImages for variety (2-8 images)
+    const oldValue = storyIdea.numImages;
+    storyIdea.numImages = Math.floor(Math.random() * 7) + 2; // 2-8
+    log('info', 'Randomized numImages for variety', { from: oldValue, to: storyIdea.numImages });
 
     log('info', 'Story idea generation completed successfully', storyIdea);
     res.json(storyIdea);

@@ -56,6 +56,43 @@ function fileToDataURL(file){
   });
 }
 
+// Helper functions for random generation
+function getRandomArtStyle() {
+  const styles = ['Watercolor', 'Oil Painting', 'Digital Art', 'Cartoon', 'Sketchy', 'Realistic'];
+  return styles[Math.floor(Math.random() * styles.length)];
+}
+
+function getRandomCharacter() {
+  const names = ['Emma', 'Liam', 'Sophia', 'Noah', 'Olivia', 'Ava', 'Isabella', 'Mason', 'Mia', 'Ethan', 'Jacob', 'Madison', 'David', 'Sarah', 'Michael', 'Lily'];
+  const ages = ['3 years old', '4 years old', '5 years old', '6 years old', '7 years old', '8 years old', '9 years old'];
+  const personalities = [
+    'curious and brave', 'kind and helpful', 'funny and energetic', 'smart and creative',
+    'gentle and caring', 'adventurous and bold', 'friendly and loyal', 'imaginative and artistic',
+    'thoughtful and wise', 'playful and silly', 'determined and strong', 'cheerful and optimistic'
+  ];
+  const cultures = ['', 'Jewish', 'Hispanic', 'Asian', 'African American', 'Native American', 'Mixed heritage'];
+  const interests = ['loves books', 'loves animals', 'loves art', 'loves music', 'loves sports', 'loves science', 'loves cooking', 'loves nature'];
+  const roles = ['main character', 'best friend', 'helpful sibling', 'wise grandparent', 'fun teacher', 'loyal pet', 'magical helper'];
+  
+  const culture = cultures[Math.floor(Math.random() * cultures.length)];
+  const personality = personalities[Math.floor(Math.random() * personalities.length)];
+  const interest = interests[Math.floor(Math.random() * interests.length)];
+  
+  const description = [culture, personality, interest].filter(Boolean).join(', ');
+  
+  return {
+    name: names[Math.floor(Math.random() * names.length)],
+    age: ages[Math.floor(Math.random() * ages.length)],
+    description: description,
+    role: roles[Math.floor(Math.random() * roles.length)]
+  };
+}
+
+function clearAllCharacters() {
+  const characterCards = els.charContainer.querySelectorAll('.char-card');
+  characterCards.forEach(card => card.remove());
+}
+
 // start with one character row
 addCharacterCard({ 
   name: 'David', 
@@ -128,8 +165,21 @@ els.generateFromScratchBtn.addEventListener('click', async ()=>{
     els.story.value = storyIdea.story || '';
     els.numImages.value = storyIdea.numImages || 6;
     
+    // Randomize art style
+    const randomStyle = getRandomArtStyle();
+    els.artStyle.value = randomStyle;
+    
+    // Clear existing characters and generate random ones
+    clearAllCharacters();
+    
+    // Generate 1-3 random characters
+    const numCharacters = Math.floor(Math.random() * 3) + 1; // 1-3 characters
+    for (let i = 0; i < numCharacters; i++) {
+      addCharacterCard(getRandomCharacter());
+    }
+    
     setLoading(false, '');
-    els.status.textContent = 'Story idea generated! You can modify the details and add characters.';
+    els.status.textContent = `Story generated! ${numCharacters} random character${numCharacters > 1 ? 's' : ''} created with ${randomStyle} art style.`;
   }catch(err){
     console.error(err);
     setLoading(false, '');
