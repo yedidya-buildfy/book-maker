@@ -481,8 +481,23 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
     log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithInfo: charactersWithInfo.length });
     
     const analyses = [];
+    const phaseStartTime = Date.now();
     if (charactersWithInfo.length > 0) {
-      for(let i = 0; i < charactersWithInfo.length; i++){
+      // Safety: limit to max 5 characters to prevent infinite loops
+      const maxCharacters = Math.min(charactersWithInfo.length, 5);
+      log('info', `Processing ${maxCharacters} characters (limited for safety)`, { requested: charactersWithInfo.length, processing: maxCharacters });
+      
+      for(let i = 0; i < maxCharacters; i++){
+        // Safety check: if entire phase takes too long, break out
+        if (Date.now() - phaseStartTime > 120000) { // 2 minutes total
+          log('warn', 'Character analysis phase timeout, skipping remaining characters', { 
+            processed: i, 
+            remaining: maxCharacters - i,
+            totalTime: Date.now() - phaseStartTime 
+          });
+          break;
+        }
+        
         const ch = charactersWithInfo[i];
         log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasInfo: true, role: ch.role });
         
@@ -515,8 +530,15 @@ Provide a comprehensive description that will ensure this character looks identi
         ];
         
         try {
-          // Use gpt-5-nano for fast, cheap text analysis
-          const analysis = await openAIChat(content, 'gpt-5-nano');
+          log('info', `Starting OpenAI analysis for ${ch.name}`, { characterInfo });
+          
+          // Add timeout wrapper to prevent infinite hanging
+          const analysisPromise = openAIChat(content, 'gpt-5-nano');
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Character analysis timeout after 30 seconds')), 30000)
+          );
+          
+          const analysis = await Promise.race([analysisPromise, timeoutPromise]);
           analyses.push({ name: ch.name, role: ch.role, analysis });
           log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length });
         } catch (error) {
