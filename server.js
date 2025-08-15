@@ -106,20 +106,34 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function openAIChat(messages, model = 'gpt-3.5-turbo', maxRetries = 3){
+async function openAIChat(messages, model = 'gpt-5-nano', maxRetries = 3){
   const startTime = Date.now();
   log('info', `Starting OpenAI Chat request`, { model, messageCount: messages.length });
   
+  // Add timeout based on model type
+  const timeoutMs = model.includes('gpt-4o') ? 60000 : 
+                    model.includes('gpt-5-nano') ? 15000 : 30000; // 15s for nano, 60s for vision, 30s for others
+  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const requestBody = { model, messages, temperature: 0.8 };
+      // gpt-5-nano only supports temperature: 1 (default)
+      const requestBody = model.includes('gpt-5-nano') ? 
+        { model, messages } : 
+        { model, messages, temperature: 0.8 };
       log('debug', `Chat request attempt ${attempt}/${maxRetries}`, requestBody);
       
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      // Create timeout promise
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs)
+      );
+      
+      const fetchPromise = fetch('https://api.openai.com/v1/chat/completions', {
         method:'POST',
         headers:{'Authorization':`Bearer ${OPENAI_API_KEY}`,'Content-Type':'application/json'},
         body: JSON.stringify(requestBody)
       });
+      
+      const res = await Promise.race([fetchPromise, timeoutPromise]);
       
       const responseTime = Date.now() - startTime;
       log('info', `OpenAI Chat response received in ${responseTime}ms`, { status: res.status, attempt });
@@ -180,6 +194,9 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
   const startTime = Date.now();
   log('info', `Starting DALL-E image generation`, { promptLength: prompt.length, size });
   
+  // DALL-E can be very slow, set generous timeout
+  const timeoutMs = 120000; // 2 minutes per image
+  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const requestBody = { 
@@ -191,11 +208,18 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
       };
       log('debug', `Image generation attempt ${attempt}/${maxRetries}`, { model: requestBody.model, size, promptPreview: prompt.substring(0, 100) + '...' });
       
-      const res = await fetch('https://api.openai.com/v1/images/generations', {
+      // Create timeout promise for image generation
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Image generation timeout after ${timeoutMs}ms`)), timeoutMs)
+      );
+      
+      const fetchPromise = fetch('https://api.openai.com/v1/images/generations', {
         method:'POST',
         headers:{'Authorization':`Bearer ${OPENAI_API_KEY}`,'Content-Type':'application/json'},
         body: JSON.stringify(requestBody)
       });
+      
+      const res = await Promise.race([fetchPromise, timeoutPromise]);
       
       const responseTime = Date.now() - startTime;
       log('info', `DALL-E response received in ${responseTime}ms`, { status: res.status, attempt });
@@ -374,7 +398,7 @@ Make it creative, educational, and fun for children!`}
     ];
 
     log('info', 'Calling OpenAI for story idea generation');
-    const response = await openAIChat(prompt, 'gpt-3.5-turbo');
+    const response = await openAIChat(prompt, 'gpt-5-nano');
     log('debug', 'Raw story idea response', { responseLength: response.length, preview: response.substring(0, 200) });
     
     let storyIdea;
@@ -448,47 +472,64 @@ app.post('/api/generate', async (req, res) => {
 async function generateBookAsync(jobId, { title, story, numImages, artStyle, characters }) {
   try {
 
-    // 1) Character analyses (image->text): only for characters with images
-    const charactersWithImages = characters.filter(ch => ch.image && ch.image.trim());
-    updateJob(jobId, { currentPhase: `Analyzing ${charactersWithImages.length} characters with images...`, completedSteps: 0 });
-    log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithImages: charactersWithImages.length });
+    // 1) Character analyses (text-based): for all characters with name/description
+    const charactersWithInfo = characters.filter(ch => 
+      (ch.name && ch.name.trim()) || 
+      (ch.description && ch.description.trim()) || 
+      (ch.age && ch.age.trim()) ||
+      (ch.role && ch.role.trim())
+    );
+    updateJob(jobId, { currentPhase: `Analyzing ${charactersWithInfo.length} characters...`, completedSteps: 0 });
+    log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithInfo: charactersWithInfo.length });
     
     const analyses = [];
-    if (charactersWithImages.length > 0) {
-      for(let i = 0; i < charactersWithImages.length; i++){
-        const ch = charactersWithImages[i];
-        log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasImage: true, role: ch.role });
+    if (charactersWithInfo.length > 0) {
+      for(let i = 0; i < charactersWithInfo.length; i++){
+        const ch = charactersWithInfo[i];
+        log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasInfo: true, role: ch.role });
+        
+        const characterInfo = [
+          `Name: ${ch.name || 'Unnamed Character'}`,
+          `Age: ${ch.age || 'Age not specified'}`,
+          `Description: ${ch.description || 'No description provided'}`,
+          `Role: ${ch.role || 'Character role not specified'}`,
+          ch.image ? 'Has reference image' : 'No reference image'
+        ].join('\n');
         
         const content = [
-          {role:'system', content:`You are a character bible creator for children's books. Create ULTRA-DETAILED character descriptions for absolute visual consistency across all images.
+          {role:'system', content:`You are a character bible creator for children's books. Create detailed character descriptions for visual consistency across all illustrations in ${artStyle} art style.
 
-CRITICAL: Provide EXACT specifications for:
-- Age: specific age (e.g. "exactly 7 years old")  
-- Face: precise facial features, eye color, nose shape, mouth, expression
-- Hair: exact color, texture, length, style (be very specific)
-- Clothing: detailed outfit description including colors, patterns, accessories
-- Body: height, build, posture, distinctive features
-- Personality traits: reflected in posture and expression
-- Color palette: list exact colors used (hex codes if possible)
+Create a character bible entry with:
+- Physical appearance (age-appropriate for children's books)
+- Facial features, hair style and color
+- Typical clothing and color palette
+- Personality traits that show in their expression
+- Any cultural or unique characteristics mentioned
 
-This character MUST look identical in every single image. Be extremely detailed and specific.`},
-          {role:'user', content: [
-            {"type":"text","text":`Character name: ${ch.name||'Unknown'}\nRole: ${ch.role||''}\n\nCreate an ultra-detailed character bible entry that will ensure perfect visual consistency across all illustrations. Include every visual detail needed for an artist to draw this character identically every time.`},
-            {"type":"image_url","image_url":{"url": ch.image }}
-          ]}
+Make it detailed enough for an artist to draw the character consistently, but child-friendly and appropriate for the ${artStyle} art style.`},
+          {role:'user', content: `Create a detailed character bible for a children's book character based on this information:
+
+${characterInfo}
+
+Art Style: ${artStyle}
+
+Provide a comprehensive description that will ensure this character looks identical in every illustration.`}
         ];
         
         try {
-          const analysis = await openAIChat(content, 'gpt-4o'); // Always use gpt-4o for image analysis
+          // Use gpt-5-nano for fast, cheap text analysis
+          const analysis = await openAIChat(content, 'gpt-5-nano');
           analyses.push({ name: ch.name, role: ch.role, analysis });
           log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length });
         } catch (error) {
-          log('error', `Character analysis failed for ${ch.name}`, { error: error.message });
-          throw error;
+          log('error', `Character analysis failed for ${ch.name}, using fallback description`, { error: error.message });
+          // Fallback: create basic character description
+          const fallbackAnalysis = `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style with warm, child-friendly features.`;
+          analyses.push({ name: ch.name, role: ch.role, analysis: fallbackAnalysis });
         }
       }
     } else {
-      log('info', 'No characters with images found, skipping character analysis');
+      log('info', 'No characters with information found, skipping character analysis');
     }
     updateJob(jobId, { completedSteps: 1, currentPhase: 'Planning book structure...' });
     log('info', 'PHASE END: Character analysis', { characterCount: analyses.length, jobId });
@@ -518,7 +559,7 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
     ];
     
     log('info', 'Calling OpenAI for book planning');
-    const planText = await openAIChat(planningPrompt, 'gpt-3.5-turbo');
+    const planText = await openAIChat(planningPrompt, 'gpt-5-nano');
     log('debug', 'Raw planning response', { responseLength: planText.length, preview: planText.substring(0, 300) });
     
     let plan;

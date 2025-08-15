@@ -28,7 +28,9 @@ function addCharacterCard(data){
       <img alt="preview" src="${data?.image||''}" />
       <div class="meta">
         <label>Name <input class="ch-name" placeholder="Character name" value="${data?.name||''}"></label>
-        <label>Role <input class="ch-role" placeholder="e.g., curious 3-year-old boy" value="${data?.role||''}"></label>
+        <label>Age <input class="ch-age" placeholder="e.g., 7 years old" value="${data?.age||''}"></label>
+        <label>Description <input class="ch-desc" placeholder="e.g., Jewish, curious, loves books" value="${data?.description||''}"></label>
+        <label>Role <input class="ch-role" placeholder="e.g., main character, friend, teacher" value="${data?.role||''}"></label>
         <input class="ch-file" type="file" accept="image/*">
       </div>
       <div><button class="secondary ch-remove">Remove</button></div>
@@ -55,7 +57,12 @@ function fileToDataURL(file){
 }
 
 // start with one character row
-addCharacterCard({ name:'David', role:'curious 3-year-old boy' });
+addCharacterCard({ 
+  name: 'David', 
+  age: '7 years old',
+  description: 'Jewish, curious, loves adventures',
+  role: 'main character' 
+});
 els.addCharBtn.addEventListener('click', ()=> addCharacterCard());
 
 // Handle custom style input visibility
@@ -77,6 +84,8 @@ function gather(){
     
     return {
       name: c.querySelector('.ch-name').value.trim(),
+      age: c.querySelector('.ch-age').value.trim(),
+      description: c.querySelector('.ch-desc').value.trim(),
       role: c.querySelector('.ch-role').value.trim(),
       image: hasValidImage ? imgSrc : ''
     };
