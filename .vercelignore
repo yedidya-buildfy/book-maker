@@ -1,0 +1,7 @@
+output/
+node_modules/
+*.backup
+*.png
+*.md
+.DS_Store
+.git/

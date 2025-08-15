@@ -20,8 +20,8 @@ function log(level, message, data = null) {
 }
 
 if(!OPENAI_API_KEY){
-  log('error', 'Missing OPENAI_API_KEY in .env');
-  process.exit(1);
+  log('error', 'Missing OPENAI_API_KEY in environment variables');
+  console.error('OPENAI_API_KEY is required but not set. Please configure it in Vercel dashboard.');
 }
 
 log('info', `Server starting on port ${PORT}`);
@@ -31,7 +31,7 @@ app.use(express.json({limit: '40mb'}));
 
 // Static file serving
 app.use('/output', express.static('output'));
-app.use(express.static('client'));
+app.use(express.static('public'));
 
 // Job management system
 const jobs = new Map();
@@ -683,11 +683,17 @@ Make ${totalImages} image objects with engaging scenes that tell the story.`}
   }
 }
 
-app.listen(PORT, ()=> {
-  log('info', `Server running at http://localhost:${PORT}`);
-  log('info', 'Available endpoints:');
-  log('info', '  POST /api/generate-story-idea - Generate story from scratch');
-  log('info', '  POST /api/generate - Generate complete book');
-  log('info', '  GET /output/* - Serve generated files');
-  log('info', 'Server ready to accept requests');
-});
+// For local development
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, ()=> {
+    log('info', `Server running at http://localhost:${PORT}`);
+    log('info', 'Available endpoints:');
+    log('info', '  POST /api/generate-story-idea - Generate story from scratch');
+    log('info', '  POST /api/generate - Generate complete book');
+    log('info', '  GET /output/* - Serve generated files');
+    log('info', 'Server ready to accept requests');
+  });
+}
+
+// Export for Vercel serverless
+export default app;
