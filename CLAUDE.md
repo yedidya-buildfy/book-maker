@@ -1,0 +1,1 @@
+- the vercal deploy happend from git ignore the vercel cli and if you want to deploy add commit, the commits are with accending numbers
