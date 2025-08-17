@@ -473,8 +473,19 @@ Then, respond in JSON format with exactly these fields:
 
 Make it creative, educational, and fun for children!`;
 
-    log('info', 'Calling Gemini for story idea generation');
-    const response = await geminiChat(prompt);
+    log('info', 'Calling Gemini for story idea generation (fallback to OpenAI if needed)');
+    let response;
+    try {
+      response = await geminiChat(prompt);
+    } catch (error) {
+      log('warn', 'Gemini failed, falling back to OpenAI', { error: error.message });
+      // Fallback to OpenAI with improved prompt
+      const openAIPrompt = [
+        {role: 'system', content: 'You are a creative children\'s book author.'},
+        {role: 'user', content: prompt}
+      ];
+      response = await openAIChat(openAIPrompt, 'gpt-3.5-turbo');
+    }
     log('debug', 'Raw story idea response', { responseLength: response.length, preview: response.substring(0, 200) });
     
     let storyIdea;
@@ -546,18 +557,69 @@ app.post('/api/generate', async (req, res) => {
 async function generateBookAsync(jobId, { title, story, numImages, artStyle, characters }) {
   try {
 
-    // 1) Character analyses - TEMPORARILY SKIPPED FOR DEBUGGING
-    log('info', 'PHASE START: Character analysis (SKIPPED FOR DEBUGGING)', { jobId, totalCharacters: characters.length });
+    // 1) Character analyses (text-based): for all characters with name/description
+    const charactersWithInfo = characters.filter(ch => 
+      (ch.name && ch.name.trim()) || 
+      (ch.description && ch.description.trim()) || 
+      (ch.age && ch.age.trim()) ||
+      (ch.role && ch.role.trim())
+    );
+    updateJob(jobId, { currentPhase: `Analyzing ${charactersWithInfo.length} characters...`, completedSteps: 0 });
+    log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithInfo: charactersWithInfo.length });
     
-    // Create simple character summaries without OpenAI analysis
-    const analyses = characters.map(ch => ({
-      name: ch.name || 'Character',
-      role: ch.role || 'Character',
-      analysis: `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style.`
-    }));
-    
+    const analyses = [];
+    if (charactersWithInfo.length > 0) {
+      // Safety: limit to max 3 characters for speed
+      const maxCharacters = Math.min(charactersWithInfo.length, 3);
+      log('info', `Processing ${maxCharacters} characters (limited for speed)`, { requested: charactersWithInfo.length, processing: maxCharacters });
+      
+      for(let i = 0; i < maxCharacters; i++){
+        const ch = charactersWithInfo[i];
+        log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasInfo: true, role: ch.role });
+        
+        const characterPrompt = `You are a character bible creator for children's books. 
+
+I need you to create a detailed character description for visual consistency across all illustrations in ${artStyle} art style.
+
+Character Information:
+- Name: ${ch.name || 'Unnamed Character'}
+- Age: ${ch.age || 'Age not specified'}
+- Description: ${ch.description || 'No description provided'}
+- Role: ${ch.role || 'Character role not specified'}
+
+Create a character bible entry with:
+- Physical appearance (age-appropriate for children's books)
+- Facial features, hair style and color
+- Typical clothing and color palette
+- Personality traits that show in their expression
+- Any cultural or unique characteristics mentioned
+
+Make it detailed enough for an artist to draw the character consistently, but child-friendly and appropriate for the ${artStyle} art style.`;
+        
+        try {
+          log('info', `Starting character analysis for ${ch.name}`);
+          let analysis;
+          try {
+            analysis = await geminiChat(characterPrompt);
+          } catch (error) {
+            log('warn', 'Gemini failed for character analysis, using fallback', { error: error.message });
+            // Fallback: create basic character description
+            analysis = `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style with warm, child-friendly features.`;
+          }
+          analyses.push({ name: ch.name, role: ch.role, analysis });
+          log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length });
+        } catch (error) {
+          log('error', `Character analysis failed for ${ch.name}, using fallback description`, { error: error.message });
+          // Fallback: create basic character description
+          const fallbackAnalysis = `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style with warm, child-friendly features.`;
+          analyses.push({ name: ch.name, role: ch.role, analysis: fallbackAnalysis });
+        }
+      }
+    } else {
+      log('info', 'No characters with information found, skipping character analysis');
+    }
     updateJob(jobId, { completedSteps: 1, currentPhase: 'Planning book structure...' });
-    log('info', 'PHASE END: Character analysis (SKIPPED)', { characterCount: analyses.length, jobId });
+    log('info', 'PHASE END: Character analysis', { characterCount: analyses.length, jobId });
 
     // 2) Planning (JSON): gpt-4o
     const totalImages = numImages + 2; // story images + front cover + back cover
@@ -602,8 +664,19 @@ Now provide the response in this exact JSON format:
   ]
 }`;
     
-    log('info', 'Calling Gemini for book planning');
-    const planText = await geminiChat(planningPrompt);
+    log('info', 'Calling Gemini for book planning (fallback to OpenAI if needed)');
+    let planText;
+    try {
+      planText = await geminiChat(planningPrompt);
+    } catch (error) {
+      log('warn', 'Gemini failed, falling back to OpenAI', { error: error.message });
+      // Fallback to OpenAI with improved prompt
+      const openAIPrompt = [
+        {role: 'system', content: 'You are a children\'s book art director.'},
+        {role: 'user', content: planningPrompt}
+      ];
+      planText = await openAIChat(openAIPrompt, 'gpt-3.5-turbo');
+    }
     log('debug', 'Raw planning response', { responseLength: planText.length, preview: planText.substring(0, 300) });
     
     let plan;
