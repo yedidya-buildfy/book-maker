@@ -191,6 +191,10 @@ els.generateFromScratchBtn.addEventListener('click', async ()=>{
 
 els.generateBtn.addEventListener('click', async ()=>{
   try{
+    // Reset polling state for new job
+    lastLoggedPhase = '';
+    lastLoggedStep = -1;
+    
     els.generateBtn.disabled = true;
     els.status.textContent = '';
     els.result.innerHTML = '';
@@ -220,6 +224,10 @@ els.generateBtn.addEventListener('click', async ()=>{
   }
 });
 
+// Track logged phases to prevent infinite logging
+let lastLoggedPhase = '';
+let lastLoggedStep = -1;
+
 async function pollJobProgress(jobId) {
   try {
     const res = await fetch(`/api/job/${jobId}`);
@@ -229,10 +237,36 @@ async function pollJobProgress(jobId) {
     // Update UI with current progress
     if (job.currentPhase) {
       setLoading(true, job.currentPhase);
+      
+      // Only log if phase or step changed (prevent infinite loop logs)
+      const currentStepKey = `${job.currentPhase}-${job.completedSteps || 0}`;
+      if (currentStepKey !== lastLoggedPhase) {
+        lastLoggedPhase = currentStepKey;
+        console.log(`📊 PROGRESS: ${job.currentPhase} | Job: ${jobId} | Steps: ${job.completedSteps || 0}/${job.totalSteps || 'unknown'}`);
+        
+        // Log phase transitions only once
+        if (job.currentPhase.includes('Analyzing') && job.currentPhase.includes('characters') && !lastLoggedPhase.includes('Analyzing')) {
+          console.log(`🔍 PHASE: Character Analysis | Job: ${jobId}`);
+        } else if (job.currentPhase.includes('Planning') && !lastLoggedPhase.includes('Planning')) {
+          console.log(`🔄 TRANSITION: Analyzing characters → Plan JSON | Job: ${jobId}`);
+        } else if (job.currentPhase.includes('Generating image') && !lastLoggedPhase.includes('Generating')) {
+          console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId}`);
+          console.log(`🎨 PHASE: Image Generation | Job: ${jobId}`);
+        } else if (job.currentPhase.includes('Finalizing PDF') && !lastLoggedPhase.includes('Finalizing')) {
+          console.log(`🔄 TRANSITION: Create cover + pages → Build PDF | Job: ${jobId}`);
+          console.log(`📄 PHASE: PDF Finalization | Job: ${jobId}`);
+        }
+      }
     }
     
     if (job.status === 'completed') {
+      // Reset polling state and stop
+      lastLoggedPhase = '';
+      lastLoggedStep = -1;
+      
       setLoading(false, 'Done!');
+      console.log(`🎉 COMPLETE: Book generation finished! | Job: ${jobId}`);
+      
       if (job.result && job.result.pdf) {
         const pdf = job.result.pdf;
         let pdfUrl = '';
@@ -254,16 +288,26 @@ async function pollJobProgress(jobId) {
       }
       els.generateBtn.disabled = false;
       els.status.textContent = 'Book generated successfully!';
+      return; // Stop polling
     } else if (job.status === 'failed') {
+      // Reset polling state and stop
+      lastLoggedPhase = '';
+      lastLoggedStep = -1;
+      
       setLoading(false, '');
       els.status.textContent = 'Error: ' + (job.error || 'Generation failed');
       els.generateBtn.disabled = false;
+      return; // Stop polling
     } else {
       // Still in progress, poll again
       setTimeout(() => pollJobProgress(jobId), 2000); // Poll every 2 seconds
     }
   } catch (err) {
     console.error('Polling error:', err);
+    // Reset polling state and stop
+    lastLoggedPhase = '';
+    lastLoggedStep = -1;
+    
     setLoading(false, '');
     els.status.textContent = 'Error checking progress: ' + err.message;
     els.generateBtn.disabled = false;
