@@ -6,6 +6,7 @@ import PDFDocument from 'pdfkit';
 import Jimp from 'jimp';
 import admin from 'firebase-admin';
 import crypto from 'crypto';
+import { createFallbackImage, createSetupGuideImage } from './fallback-images.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -14,18 +15,74 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Initialize Firebase Admin (optional - can work without it)
 let bucket = null;
-try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+let firebaseConfigured = false;
+
+function initializeFirebase() {
+  try {
+    const serviceAccountData = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+    
+    if (!serviceAccountData || !storageBucket) {
+      log('info', 'Firebase environment variables not found', {
+        hasServiceAccount: !!serviceAccountData,
+        hasStorageBucket: !!storageBucket
+      });
+      return false;
+    }
+    
+    // Validate service account format
+    let serviceAccount;
+    try {
+      serviceAccount = JSON.parse(serviceAccountData);
+    } catch (parseError) {
+      log('error', 'Invalid FIREBASE_SERVICE_ACCOUNT JSON format', { 
+        error: parseError.message,
+        dataPreview: serviceAccountData?.substring(0, 100) 
+      });
+      return false;
+    }
+    
+    // Validate required fields in service account
+    const requiredFields = ['type', 'project_id', 'private_key', 'client_email'];
+    const missingFields = requiredFields.filter(field => !serviceAccount[field]);
+    
+    if (missingFields.length > 0) {
+      log('error', 'Missing required fields in Firebase service account', { missingFields });
+      return false;
+    }
+    
+    // Validate storage bucket format (should be just bucket name, not URL)
+    const bucketName = storageBucket.includes('://') ? 
+      storageBucket.split('/').pop().replace('.firebasestorage.app/files', '.appspot.com') :
+      storageBucket;
+    
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+      storageBucket: bucketName
     });
+    
     bucket = admin.storage().bucket();
-    console.log('Firebase Storage initialized');
+    firebaseConfigured = true;
+    
+    log('info', '✅ Firebase Storage initialized successfully', { bucketName });
+    return true;
+    
+  } catch (error) {
+    log('error', 'Failed to initialize Firebase', { error: error.message });
+    return false;
   }
-} catch (error) {
-  console.log('Firebase not configured, PDFs will be returned as downloads');
+}
+
+// Try to initialize Firebase
+firebaseConfigured = initializeFirebase();
+
+if (!firebaseConfigured) {
+  log('warn', '📋 Firebase Setup Guide:');
+  log('warn', '1. Go to Firebase Console → Project Settings → Service Accounts');
+  log('warn', '2. Click "Generate New Private Key" and download the JSON file');
+  log('warn', '3. Add to .env: FIREBASE_SERVICE_ACCOUNT={"type":"service_account",...}');
+  log('warn', '4. Add to .env: FIREBASE_STORAGE_BUCKET=your-project.appspot.com');
+  log('warn', '5. Without Firebase, PDFs will be returned as direct downloads');
 }
 
 // Enhanced logging
@@ -196,9 +253,15 @@ async function openAIChat(messages, model = 'gpt-5-nano', maxRetries = 3){
   }
 }
 
-async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
+async function openAIImage(prompt, size='1024x1024', maxRetries = 3, fallbackInfo = null){
   const startTime = Date.now();
-  log('info', `Starting DALL-E image generation`, { promptLength: prompt.length, size });
+  log('info', `Starting image generation`, { promptLength: prompt.length, size, hasFallbackInfo: !!fallbackInfo });
+  
+  // Check if OpenAI API key is available
+  if (!OPENAI_API_KEY || OPENAI_API_KEY === 'undefined') {
+    log('warn', 'OpenAI API key not configured, using fallback image generation');
+    return await generateFallbackImage(fallbackInfo, size);
+  }
   
   // DALL-E can be very slow, set generous timeout
   const timeoutMs = 120000; // 2 minutes per image
@@ -212,7 +275,7 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
         quality: 'standard',
         n: 1
       };
-      log('debug', `Image generation attempt ${attempt}/${maxRetries}`, { model: requestBody.model, size, promptPreview: prompt.substring(0, 100) + '...' });
+      log('debug', `DALL-E attempt ${attempt}/${maxRetries}`, { model: requestBody.model, size, promptPreview: prompt.substring(0, 100) + '...' });
       
       // Create timeout promise for image generation
       const timeoutPromise = new Promise((_, reject) => 
@@ -232,7 +295,29 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
       
       if(!res.ok){ 
         const errorText = await res.text();
-        const errorData = JSON.parse(errorText);
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch (e) {
+          errorData = { error: { message: errorText } };
+        }
+        
+        // Check for API key issues (401 unauthorized)
+        if (res.status === 401 || errorData.error?.code === 'invalid_api_key') {
+          log('error', 'OpenAI API key is invalid/expired, using fallback image generation', { 
+            status: res.status, 
+            error: errorData.error?.message || errorText 
+          });
+          
+          // For first image, create a setup guide
+          if (attempt === 1 && (!fallbackInfo || fallbackInfo.title === 'Front Cover')) {
+            log('info', 'Creating OpenAI setup guide image for first generation');
+            return await createSetupGuideImage();
+          }
+          
+          // For other images, create fallback
+          return await generateFallbackImage(fallbackInfo, size);
+        }
         
         // Check if it's a rate limit error
         if (res.status === 429 || errorData.error?.code === 'rate_limit_exceeded') {
@@ -245,7 +330,24 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
           }
         }
         
+        // Check for insufficient quota/billing issues
+        if (res.status === 402 || errorData.error?.code === 'insufficient_quota' || 
+            errorData.error?.message?.includes('quota') || errorData.error?.message?.includes('billing')) {
+          log('error', 'OpenAI account has insufficient credits/quota, using fallback image generation', { 
+            status: res.status, 
+            error: errorData.error?.message || errorText 
+          });
+          return await generateFallbackImage(fallbackInfo, size);
+        }
+        
         log('error', 'DALL-E API error', { status: res.status, error: errorText, attempt });
+        
+        // For final attempt, fall back to placeholder
+        if (attempt === maxRetries) {
+          log('warn', 'All DALL-E attempts failed, using fallback image generation');
+          return await generateFallbackImage(fallbackInfo, size);
+        }
+        
         throw new Error('OpenAI Image error: ' + errorText); 
       }
       
@@ -268,7 +370,7 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
       
       const arrayBuffer = await imageRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      log('info', `Image generation completed successfully`, { 
+      log('info', `✅ DALL-E image generation completed successfully`, { 
         bufferSize: buffer.length,
         totalTime: Date.now() - startTime,
         attempt
@@ -280,7 +382,8 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
       log('error', `Image generation attempt ${attempt} failed after ${responseTime}ms`, { error: error.message });
       
       if (attempt === maxRetries) {
-        throw error;
+        log('warn', 'All image generation attempts failed, using fallback');
+        return await generateFallbackImage(fallbackInfo, size);
       }
       
       // Wait before retrying
@@ -288,6 +391,31 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
       log('info', `Waiting ${waitTime}ms before image retry ${attempt + 1}/${maxRetries}`);
       await sleep(waitTime);
     }
+  }
+}
+
+async function generateFallbackImage(fallbackInfo, size = '1024x1024') {
+  try {
+    const [width, height] = size.split('x').map(Number);
+    const imageSize = Math.max(width, height); // Use larger dimension for square image
+    
+    if (!fallbackInfo) {
+      log('info', 'Creating generic fallback image');
+      return await createFallbackImage('Story Scene', 'A beautiful scene from a children\'s story', imageSize);
+    }
+    
+    log('info', `Creating fallback image for: ${fallbackInfo.title}`, { description: fallbackInfo.description?.substring(0, 100) });
+    return await createFallbackImage(
+      fallbackInfo.title || 'Story Scene',
+      fallbackInfo.description || 'A scene from a children\'s story',
+      imageSize
+    );
+  } catch (error) {
+    log('error', 'Fallback image generation failed', { error: error.message });
+    // Return a simple colored buffer as last resort
+    const Jimp = (await import('jimp')).default;
+    const image = new Jimp(1024, 1024, 0x4285F4FF);
+    return await image.getBufferAsync(Jimp.MIME_PNG);
   }
 }
 
@@ -362,8 +490,12 @@ async function geminiChat(prompt, maxRetries = 3) {
 
 // ---- Firebase Storage Helper ----
 async function uploadPDFToStorage(pdfBuffer, filename) {
-  if (!bucket) {
-    log('info', 'Firebase not configured, returning PDF as base64');
+  if (!firebaseConfigured || !bucket) {
+    log('info', 'Firebase not configured, returning PDF as direct download', {
+      firebaseConfigured,
+      hasBucket: !!bucket,
+      filename
+    });
     return {
       type: 'download',
       data: pdfBuffer.toString('base64'),
@@ -464,6 +596,8 @@ I need you to create a children's book concept with the following requirements:
 
 First, think about what kind of story would be engaging for children this age, considering themes like friendship, learning, adventure, or problem-solving.
 
+IMPORTANT: Respond with pure JSON only. Do not use markdown code blocks or any other formatting. Just return the raw JSON object.
+
 Then, respond in JSON format with exactly these fields:
 {
   "title": "Book title here",
@@ -494,9 +628,22 @@ Make it creative, educational, and fun for children!`;
       log('info', 'PHASE END: Story idea generation (parsed JSON)', storyIdea);
     } catch (e) {
       log('warn', 'Failed to parse JSON, trying to extract', { error: e.message });
-      const match = response.match(/\{[\s\S]*\}/);
-      if (match) {
-        storyIdea = JSON.parse(match[0]);
+      
+      // First try to extract from markdown code blocks
+      let jsonText = response;
+      const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        jsonText = codeBlockMatch[1].trim();
+      } else {
+        // Fallback to original extraction method
+        const match = response.match(/\{[\s\S]*\}/);
+        if (match) {
+          jsonText = match[0];
+        }
+      }
+      
+      if (jsonText) {
+        storyIdea = JSON.parse(jsonText);
         log('info', 'PHASE END: Story idea generation (extracted JSON)', storyIdea);
       } else {
         log('error', 'No valid JSON found in response', { response });
@@ -651,7 +798,9 @@ For each image, I need:
 
 Think about how to break the story into ${totalImages} engaging visual scenes that flow well together and tell the complete story.
 
-Now provide the response in this exact JSON format:
+IMPORTANT: Respond with pure JSON only. Do not use markdown code blocks or any other formatting. Just return the raw JSON object.
+
+Provide the response in this exact JSON format:
 {
   "images": [
     {
@@ -691,10 +840,23 @@ Now provide the response in this exact JSON format:
     }
     catch(e){
       log('warn', 'Failed to parse planning JSON, trying to extract', { error: e.message });
-      const m = planText.match(/\{[\s\S]*\}$/);
-      if(m) {
+      
+      // First try to extract from markdown code blocks
+      let jsonText = planText;
+      const codeBlockMatch = planText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        jsonText = codeBlockMatch[1].trim();
+      } else {
+        // Fallback to original extraction method
+        const m = planText.match(/\{[\s\S]*\}$/);
+        if(m) {
+          jsonText = m[0];
+        }
+      }
+      
+      if(jsonText) {
         try {
-          plan = JSON.parse(m[0]);
+          plan = JSON.parse(jsonText);
           log('info', 'PHASE END: Book planning (extracted JSON)', { 
             imageCount: plan.images?.length || 0,
             expectedCount: totalImages
@@ -845,7 +1007,7 @@ Now provide the response in this exact JSON format:
       });
       
       log('info', `Starting generation of image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}`, { jobId });
-      const buf = await openAIImage(scenePrompt(imageObj, imageIndex));
+      const buf = await openAIImage(scenePrompt(imageObj, imageIndex), '1024x1024', 3, imageObj);
       const imagePath = path.join(outDir, `image-${String(imageNum).padStart(2,'0')}.png`);
       fs.writeFileSync(imagePath, buf);
       log('info', `Image ${imageNum} generated successfully`, { jobId });
