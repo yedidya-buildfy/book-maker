@@ -272,9 +272,12 @@ async function pollJobProgress(jobId) {
         let pdfUrl = '';
         
         if (pdf.type === 'url') {
-          // Firebase Storage URL - direct link
+          // Firebase Storage URL - fetch and create blob for download
           pdfUrl = pdf.url;
-          els.result.innerHTML = `<a href="${pdf.url}" target="_blank">View PDF</a> | <a href="${pdf.url}" download="${pdf.filename}">Download PDF</a>`;
+          els.result.innerHTML = `
+            <a href="${pdf.url}" target="_blank">View PDF</a> | 
+            <a href="#" onclick="downloadPDFFromUrl('${pdf.url}', '${pdf.filename}'); return false;">Download PDF</a>
+          `;
         } else if (pdf.type === 'download') {
           // Base64 data - create blob URL
           const pdfBlob = new Blob([Uint8Array.from(atob(pdf.data), c => c.charCodeAt(0))], {type: 'application/pdf'});
@@ -311,6 +314,39 @@ async function pollJobProgress(jobId) {
     setLoading(false, '');
     els.status.textContent = 'Error checking progress: ' + err.message;
     els.generateBtn.disabled = false;
+  }
+}
+
+// PDF Download function for Firebase URLs
+async function downloadPDFFromUrl(url, filename) {
+  try {
+    console.log(`📥 DOWNLOAD: Fetching PDF from ${url}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch PDF: ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    
+    // Create temporary download link
+    const downloadLink = document.createElement('a');
+    downloadLink.href = blobUrl;
+    downloadLink.download = filename;
+    downloadLink.style.display = 'none';
+    
+    // Trigger download
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    
+    // Clean up blob URL
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+    
+    console.log(`✅ DOWNLOAD: ${filename} download started`);
+  } catch (error) {
+    console.error('Download failed:', error);
+    alert(`Download failed: ${error.message}`);
   }
 }
 
@@ -391,6 +427,7 @@ function showLibrary() {
         </div>
         <div class="library-item-actions">
           <button onclick="window.open('${book.pdfUrl}', '_blank')" class="secondary">View PDF</button>
+          <button onclick="downloadPDFFromUrl('${book.pdfUrl}', '${book.filename}')" class="secondary">Download PDF</button>
           <button onclick="deleteFromLibrary('${book.id}')" style="background: #ff4757; color: white;">Delete</button>
         </div>
       </div>

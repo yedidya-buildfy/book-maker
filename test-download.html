@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test PDF Download</title>
+</head>
+<body>
+    <h1>Test PDF Download</h1>
+    <button onclick="testDownload()">Test Download Function</button>
+    
+    <script>
+        // PDF Download function for Firebase URLs
+        async function downloadPDFFromUrl(url, filename) {
+          try {
+            console.log(`📥 DOWNLOAD: Fetching PDF from ${url}`);
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch PDF: ${response.status}`);
+            }
+            
+            const blob = await response.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            
+            // Create temporary download link
+            const downloadLink = document.createElement('a');
+            downloadLink.href = blobUrl;
+            downloadLink.download = filename;
+            downloadLink.style.display = 'none';
+            
+            // Trigger download
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            
+            // Clean up blob URL
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+            
+            console.log(`✅ DOWNLOAD: ${filename} download started`);
+          } catch (error) {
+            console.error('Download failed:', error);
+            alert(`Download failed: ${error.message}`);
+          }
+        }
+        
+        function testDownload() {
+            downloadPDFFromUrl('https://storage.googleapis.com/mom-books.firebasestorage.app/books/1755470099509-Test_Book.pdf', 'Test_Book.pdf');
+        }
+    </script>
+</body>
+</html>
