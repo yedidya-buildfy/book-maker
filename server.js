@@ -19,38 +19,28 @@ let firebaseConfigured = false;
 
 function initializeFirebase() {
   try {
-    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY;
     const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
     
-    if (!serviceAccountPath || !storageBucket) {
+    if (!projectId || !clientEmail || !privateKey || !storageBucket) {
       log('info', 'Firebase environment variables not found', {
-        hasServiceAccountPath: !!serviceAccountPath,
+        hasProjectId: !!projectId,
+        hasClientEmail: !!clientEmail,
+        hasPrivateKey: !!privateKey,
         hasStorageBucket: !!storageBucket
       });
       return false;
     }
     
-    // Read service account from file
-    let serviceAccount;
-    try {
-      const serviceAccountData = fs.readFileSync(serviceAccountPath, 'utf8');
-      serviceAccount = JSON.parse(serviceAccountData);
-    } catch (readError) {
-      log('error', 'Failed to read Firebase service account file', { 
-        error: readError.message,
-        path: serviceAccountPath 
-      });
-      return false;
-    }
-    
-    // Validate required fields in service account
-    const requiredFields = ['type', 'project_id', 'private_key', 'client_email'];
-    const missingFields = requiredFields.filter(field => !serviceAccount[field]);
-    
-    if (missingFields.length > 0) {
-      log('error', 'Missing required fields in Firebase service account', { missingFields });
-      return false;
-    }
+    // Create service account object from environment variables
+    const serviceAccount = {
+      type: 'service_account',
+      project_id: projectId,
+      private_key: privateKey.replace(/\\n/g, '\n'), // Handle escaped newlines
+      client_email: clientEmail
+    };
     
     // Validate storage bucket format (should be just bucket name, not URL)
     const bucketName = storageBucket.includes('://') ? 
@@ -81,10 +71,11 @@ if (!firebaseConfigured) {
   log('warn', '📋 Firebase Setup Guide:');
   log('warn', '1. Go to Firebase Console → Project Settings → Service Accounts');
   log('warn', '2. Click "Generate New Private Key" and download the JSON file');
-  log('warn', '3. Save the JSON file in your project directory');
-  log('warn', '4. Add to .env: FIREBASE_SERVICE_ACCOUNT_PATH=./your-firebase-file.json');
-  log('warn', '5. Add to .env: FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app');
-  log('warn', '6. Without Firebase, PDFs will be returned as direct downloads');
+  log('warn', '3. Add to .env: FIREBASE_PROJECT_ID=your-project-id');
+  log('warn', '4. Add to .env: FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@your-project.iam.gserviceaccount.com');
+  log('warn', '5. Add to .env: FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"');
+  log('warn', '6. Add to .env: FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app');
+  log('warn', '7. Without Firebase, PDFs will be returned as direct downloads');
 }
 
 // Enhanced logging
@@ -726,6 +717,7 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
         const ch = charactersWithInfo[i];
         log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasInfo: true, role: ch.role });
         
+        const hasCharacterImage = ch.image && ch.image.trim();
         const characterPrompt = `You are a character bible creator for children's books. 
 
 I need you to create a detailed character description for visual consistency across all illustrations in ${artStyle} art style.
@@ -735,33 +727,144 @@ Character Information:
 - Age: ${ch.age || 'Age not specified'}
 - Description: ${ch.description || 'No description provided'}
 - Role: ${ch.role || 'Character role not specified'}
+${hasCharacterImage ? '- Visual Reference: Character image provided (analyze uploaded image for appearance details)' : ''}
 
-Create a character bible entry with:
-- Physical appearance (age-appropriate for children's books)
-- Facial features, hair style and color
-- Typical clothing and color palette
-- Personality traits that show in their expression
-- Any cultural or unique characteristics mentioned
+IMPORTANT: Respond with pure JSON only. Do not use markdown code blocks or any other formatting. Just return the raw JSON object.
 
-Make it detailed enough for an artist to draw the character consistently, but child-friendly and appropriate for the ${artStyle} art style.`;
+Create a detailed character bible in this exact JSON format:
+{
+  "name": "${ch.name || 'Character'}",
+  "age": "character age",
+  "physicalAppearance": {
+    "height": "description of height/build for age",
+    "faceShape": "face shape and features",
+    "eyeColor": "eye color",
+    "hairColor": "hair color",
+    "hairStyle": "hair style and length",
+    "skinTone": "skin tone description",
+    "distinctiveFeatures": "any unique physical traits"
+  },
+  "clothing": {
+    "typicalOutfit": "usual clothing style",
+    "colors": ["primary color", "secondary color"],
+    "accessories": "accessories or special items"
+  },
+  "personality": {
+    "traits": ["trait1", "trait2", "trait3"],
+    "expressions": "how personality shows in facial expressions",
+    "posture": "typical body language and posture"
+  },
+  "culturalBackground": "cultural or ethnic background if specified",
+  "role": "${ch.role || 'Character role'}",
+  "artStyleNotes": "specific notes for ${artStyle} art style consistency"
+}
+
+Make it detailed enough for an artist to draw the character consistently across all illustrations, child-friendly and appropriate for the ${artStyle} art style.`;
         
         try {
           log('info', `Starting character analysis for ${ch.name}`);
+          let analysisText;
+          try {
+            // Use OpenAI for character analysis if image is provided, otherwise Gemini
+            if (hasCharacterImage) {
+              log('info', `Using OpenAI for character analysis with image: ${ch.name}`);
+              const messages = [
+                {role: 'system', content: 'You are a character bible creator for children\'s books.'},
+                {
+                  role: 'user', 
+                  content: [
+                    { type: 'text', text: characterPrompt },
+                    { type: 'image_url', image_url: { url: ch.image } }
+                  ]
+                }
+              ];
+              analysisText = await openAIChat(messages, 'gpt-4o');
+            } else {
+              analysisText = await geminiChat(characterPrompt);
+            }
+          } catch (error) {
+            log('warn', 'AI analysis failed, using structured fallback', { error: error.message });
+            // Create structured fallback JSON
+            const fallbackAnalysis = {
+              name: ch.name || 'Character',
+              age: ch.age || 'Child',
+              physicalAppearance: {
+                height: 'Child-appropriate height',
+                faceShape: 'Round, friendly face',
+                eyeColor: 'Bright, expressive eyes',
+                hairColor: 'Natural hair color',
+                hairStyle: 'Child-friendly hairstyle',
+                skinTone: 'Warm skin tone',
+                distinctiveFeatures: ch.description || 'Friendly appearance'
+              },
+              clothing: {
+                typicalOutfit: 'Casual, child-appropriate clothing',
+                colors: ['blue', 'yellow'],
+                accessories: 'None specified'
+              },
+              personality: {
+                traits: ['friendly', 'curious', 'kind'],
+                expressions: 'Warm, engaging expressions',
+                posture: 'Open, confident posture'
+              },
+              culturalBackground: ch.description?.includes('Jewish') ? 'Jewish' : 'Not specified',
+              role: ch.role || 'Supporting character',
+              artStyleNotes: `Suitable for ${artStyle} art style with warm, child-friendly features`
+            };
+            analysisText = JSON.stringify(fallbackAnalysis);
+          }
+          
+          // Parse JSON analysis
           let analysis;
           try {
-            analysis = await geminiChat(characterPrompt);
-          } catch (error) {
-            log('warn', 'Gemini failed for character analysis, using fallback', { error: error.message });
-            // Fallback: create basic character description
-            analysis = `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style with warm, child-friendly features.`;
+            // Try to parse as JSON first
+            analysis = JSON.parse(analysisText);
+            log('info', `Character analysis completed for ${ch.name}`, { hasStructuredData: true });
+          } catch (parseError) {
+            log('warn', 'Failed to parse character analysis JSON, trying to extract', { error: parseError.message });
+            
+            // Try to extract JSON from response
+            let jsonText = analysisText;
+            const codeBlockMatch = analysisText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            if (codeBlockMatch) {
+              jsonText = codeBlockMatch[1].trim();
+            } else {
+              const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                jsonText = jsonMatch[0];
+              }
+            }
+            
+            try {
+              analysis = JSON.parse(jsonText);
+              log('info', `Character analysis extracted for ${ch.name}`, { hasStructuredData: true });
+            } catch (extractError) {
+              log('error', `Failed to extract JSON for ${ch.name}, using text fallback`, { error: extractError.message });
+              // Create minimal structured fallback
+              analysis = {
+                name: ch.name || 'Character',
+                age: ch.age || 'Child',
+                physicalAppearance: { distinctiveFeatures: analysisText },
+                role: ch.role || 'Character',
+                artStyleNotes: `${artStyle} style`
+              };
+            }
           }
-          analyses.push({ name: ch.name, role: ch.role, analysis });
-          log('info', `Character analysis completed for ${ch.name}`, { analysisLength: analysis.length });
+          
+          analyses.push(analysis);
         } catch (error) {
-          log('error', `Character analysis failed for ${ch.name}, using fallback description`, { error: error.message });
-          // Fallback: create basic character description
-          const fallbackAnalysis = `${ch.name || 'Character'}: ${ch.age || 'Child'} character for a children's book. ${ch.description || 'Friendly appearance'}. Role: ${ch.role || 'Supporting character'}. Appearance suitable for ${artStyle} art style with warm, child-friendly features.`;
-          analyses.push({ name: ch.name, role: ch.role, analysis: fallbackAnalysis });
+          log('error', `Character analysis failed for ${ch.name}, using minimal fallback`, { error: error.message });
+          // Minimal structured fallback
+          const fallbackAnalysis = {
+            name: ch.name || 'Character',
+            age: ch.age || 'Child',
+            physicalAppearance: {
+              distinctiveFeatures: ch.description || 'Friendly appearance'
+            },
+            role: ch.role || 'Supporting character',
+            artStyleNotes: `${artStyle} style with child-friendly features`
+          };
+          analyses.push(fallbackAnalysis);
         }
       }
     } else {
@@ -774,10 +877,10 @@ Make it detailed enough for an artist to draw the character consistently, but ch
     const totalImages = numImages + 2; // story images + front cover + back cover
     log('info', 'PHASE START: Book planning');
     const characterInfo = analyses.length > 0 
-      ? `Characters with detailed bibles: ${analyses.map(a=>`${a.name} - ${a.analysis.substring(0,200)}...`).join('; ')}`
-      : `Characters from story: ${characters.map(c => `${c.name} (${c.role})`).join(', ') || 'Create characters from story context'}`;
+      ? `Characters with detailed analysis (use these exact details when mentioning characters):\n${analyses.map((a, i) => `Character ${i + 1}: ${JSON.stringify(a, null, 2)}`).join('\n\n')}`
+      : `Characters from story: ${characters.map(c => `${c.name} (${c.role})`).join(', ') || 'Create characters from story context'}`;    
 
-    const planningPrompt = `You are a children's book art director creating a detailed visual plan for a children's book. 
+    const planningPrompt = `You are a children's book art director creating a detailed visual plan for a children's book.
 
 I need you to create a structured plan for ${totalImages} images that will tell this story visually:
 
@@ -793,10 +896,14 @@ The images should be organized as:
 
 For each image, I need:
 - page: The image number (1, 2, 3, etc.)
-- title: A short descriptive name for the scene
+- title: A descriptive name for the scene (e.g., "David Has An Idea - Morning Train")
 - description: A detailed description of what should be shown in the image
 - characters: Array of character names that appear in this scene
 - environment: The setting/location where this scene takes place
+- mood: The emotional tone of the scene (e.g., "Joyful, imaginative", "Playful but slightly frustrated")
+- composition: How the scene should be framed and composed (e.g., "David slightly off-center, proudly arranging cushions like a train. Emphasis on the playful atmosphere.")
+
+${analyses.length > 0 ? `IMPORTANT: When describing characters, use the detailed analysis provided above. For example, if describing ${analyses[0]?.name || 'the character'}, include specific details like their physical appearance, clothing, and personality traits as specified in their character analysis.` : ''}
 
 Think about how to break the story into ${totalImages} engaging visual scenes that flow well together and tell the complete story.
 
@@ -807,10 +914,12 @@ Provide the response in this exact JSON format:
   "images": [
     {
       "page": 1,
-      "title": "Front Cover",
-      "description": "detailed scene description here",
-      "characters": ["character name"],
-      "environment": "setting description"
+      "title": "David Has An Idea - Morning Train",
+      "description": "A cozy living room in soft daylight. David, a 3-year-old boy with curly brown hair and bright eyes, stands in the center surrounded by colorful pillows. He is small, barefoot, wearing short pajamas with stars. Around him, scattered cushions of different colors (blue, yellow, green, red). He is excitedly stacking them to resemble a train: a line of pillows like train cars. Background: simple wooden floor, a window with warm morning light, a few toys on a shelf.",
+      "characters": ["David"],
+      "environment": "cozy living room with morning light",
+      "mood": "Joyful, imaginative",
+      "composition": "David slightly off-center, proudly arranging cushions like a train. Emphasis on the playful atmosphere."
     }
   ]
 }`;
@@ -833,6 +942,14 @@ Provide the response in this exact JSON format:
     let plan;
     try{ 
       plan = JSON.parse(planText);
+      updateJob(jobId, { completedSteps: 2, currentPhase: 'Starting image generation...' });
+      // Validate each image has required fields
+      if (plan.images) {
+        plan.images.forEach((img) => {
+          if (!img.mood) img.mood = 'Warm, engaging';
+          if (!img.composition) img.composition = 'Balanced composition focusing on main characters';
+        });
+      }
       updateJob(jobId, { completedSteps: 2, currentPhase: 'Starting image generation...' });
       log('info', 'PHASE END: Book planning (parsed JSON)', { 
         imageCount: plan.images?.length || 0,
@@ -859,12 +976,19 @@ Provide the response in this exact JSON format:
       if(jsonText) {
         try {
           plan = JSON.parse(jsonText);
+          // Validate extracted plan and add missing fields
+          if (plan.images) {
+            plan.images.forEach((img) => {
+              if (!img.mood) img.mood = 'Warm, engaging';
+              if (!img.composition) img.composition = 'Balanced composition focusing on main characters';
+            });
+          }
           log('info', 'PHASE END: Book planning (extracted JSON)', { 
             imageCount: plan.images?.length || 0,
             expectedCount: totalImages
           });
         } catch (extractError) {
-          log('error', 'Extracted text was not valid JSON', { extractError: extractError.message, extractedTextPreview: m[0].substring(0, 200) });
+          log('error', 'Extracted text was not valid JSON', { extractError: extractError.message, extractedTextPreview: jsonText.substring(0, 200) });
           throw new Error('Failed to generate valid book plan');
         }
       }
@@ -916,7 +1040,16 @@ Provide the response in this exact JSON format:
     }
 
     const charSummary = analyses.length > 0 
-      ? analyses.map(a => `${a.name}: ${a.analysis}`).join('\n')
+      ? analyses.map(a => {
+          // Create detailed character description from structured analysis
+          const physical = a.physicalAppearance ? 
+            `Physical: ${JSON.stringify(a.physicalAppearance).replace(/[{}"]/g, '')}` : '';
+          const clothing = a.clothing ? 
+            `Clothing: ${JSON.stringify(a.clothing).replace(/[{}"]/g, '')}` : '';
+          const personality = a.personality ? 
+            `Personality: ${JSON.stringify(a.personality).replace(/[{}"]/g, '')}` : '';
+          return `${a.name} (${a.role}): ${[physical, clothing, personality].filter(Boolean).join(', ')}`;
+        }).join('\n')
       : characters.map(c => `${c.name}: ${c.role}`).join('\n');
     const hasCharacterBoard = !!board;
 
@@ -940,8 +1073,9 @@ Provide the response in this exact JSON format:
         
         // Visual specifications
         `Environment: ${imageObj.environment || ''}`,
+        `Mood: ${imageObj.mood || 'warm, engaging'}`,
+        `Composition: ${imageObj.composition || 'balanced composition focusing on main characters'}`,
         `Lighting: ${imageObj.lighting || 'warm, consistent lighting'}`,
-        `Composition: ${imageObj.composition || ''}`,
         `Color Palette: ${imageObj.palette || ''} (maintain consistency across all images)`,
         `Props: ${imageObj.props || ''}`,
         `Continuity: ${imageObj.continuity || ''}`,
