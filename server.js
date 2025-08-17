@@ -10,6 +10,7 @@ import crypto from 'crypto';
 const app = express();
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Initialize Firebase Admin (optional - can work without it)
 let bucket = null;
@@ -40,6 +41,11 @@ function log(level, message, data = null) {
 if(!OPENAI_API_KEY){
   log('error', 'Missing OPENAI_API_KEY in environment variables');
   console.error('OPENAI_API_KEY is required but not set. Please configure it in Vercel dashboard.');
+}
+
+if(!GEMINI_API_KEY){
+  log('error', 'Missing GEMINI_API_KEY in environment variables');
+  console.error('GEMINI_API_KEY is required but not set. Please configure it in Vercel dashboard.');
 }
 
 log('info', `Server starting on port ${PORT}`);
@@ -285,6 +291,75 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3){
   }
 }
 
+// ---- Gemini API Helper ----
+async function geminiChat(prompt, maxRetries = 3) {
+  const startTime = Date.now();
+  log('info', `Starting Gemini API request`, { promptLength: prompt.length });
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const requestBody = {
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }]
+      };
+      
+      log('debug', `Gemini request attempt ${attempt}/${maxRetries}`);
+      
+      // 30-second timeout for Gemini
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Gemini request timeout after 30s`)), 30000)
+      );
+      
+      const fetchPromise = fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
+      
+      const res = await Promise.race([fetchPromise, timeoutPromise]);
+      
+      const responseTime = Date.now() - startTime;
+      log('info', `Gemini response received in ${responseTime}ms`, { status: res.status, attempt });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        log('error', 'Gemini API error', { status: res.status, error: errorText, attempt });
+        
+        if (attempt === maxRetries) {
+          throw new Error('Gemini API error: ' + errorText);
+        }
+        continue;
+      }
+      
+      const data = await res.json();
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      
+      log('info', `Gemini request completed successfully`, { 
+        responseLength: content.length,
+        totalTime: Date.now() - startTime,
+        attempt
+      });
+      
+      return content;
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+      log('error', `Gemini attempt ${attempt} failed after ${responseTime}ms`, { error: error.message });
+      
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Wait before retrying
+      const waitTime = Math.pow(2, attempt) * 1000;
+      log('info', `Waiting ${waitTime}ms before Gemini retry ${attempt + 1}/${maxRetries}`);
+      await sleep(waitTime);
+    }
+  }
+}
+
 // ---- Firebase Storage Helper ----
 async function uploadPDFToStorage(pdfBuffer, filename) {
   if (!bucket) {
@@ -377,28 +452,29 @@ app.post('/api/generate-story-idea', async (req, res) => {
   log('info', 'PHASE START: Story idea generation');
   
   try {
-    const prompt = [
-      {role: 'system', content: 'You are a creative children\'s book author who creates engaging, age-appropriate stories for kids aged 3-8. Generate book ideas that are wholesome, educational, and fun.'},
-      {role: 'user', content: `Create a children's book concept with the following requirements:
+    const prompt = `You are a creative children's book author who creates engaging, age-appropriate stories for kids aged 3-8. Generate book ideas that are wholesome, educational, and fun.
+
+I need you to create a children's book concept with the following requirements:
 - Target age: 3-8 years old
-- Story should be short and engaging
+- Story should be short and engaging  
 - 4-8 pages of content (plus covers)
 - Include a catchy title
 - Brief story outline (2-4 sentences)
 - Suggest number of pages between 4-8
 
-Respond in JSON format with exactly these fields:
+First, think about what kind of story would be engaging for children this age, considering themes like friendship, learning, adventure, or problem-solving.
+
+Then, respond in JSON format with exactly these fields:
 {
   "title": "Book title here",
-  "story": "Brief story outline here",
+  "story": "Brief story outline here", 
   "numImages": 6
 }
 
-Make it creative, educational, and fun for children!`}
-    ];
+Make it creative, educational, and fun for children!`;
 
-    log('info', 'Calling OpenAI for story idea generation');
-    const response = await openAIChat(prompt, 'gpt-5-nano');
+    log('info', 'Calling Gemini for story idea generation');
+    const response = await geminiChat(prompt);
     log('debug', 'Raw story idea response', { responseLength: response.length, preview: response.substring(0, 200) });
     
     let storyIdea;
@@ -490,32 +566,44 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
       ? `Characters with detailed bibles: ${analyses.map(a=>`${a.name} - ${a.analysis.substring(0,200)}...`).join('; ')}`
       : `Characters from story: ${characters.map(c => `${c.name} (${c.role})`).join(', ') || 'Create characters from story context'}`;
 
-    const planningPrompt = [
-      {role:'system', content:"You are a children's book art director. Create a JSON plan with image descriptions. Output valid JSON only."},
-      {role:'user', content:`Create a JSON plan for ${totalImages} images:
-- Image 1: Front cover (flat 2D artwork, not book mockup)
-- Images 2-${numImages + 1}: Story scenes (${numImages} total)
-- Image ${totalImages}: Back cover (flat 2D artwork, not book mockup)
+    const planningPrompt = `You are a children's book art director creating a detailed visual plan for a children's book. 
 
-Book: "${title}"
+I need you to create a structured plan for ${totalImages} images that will tell this story visually:
+
+Book Title: "${title}"
 Story: ${story || 'Create scenes from title'}
 Art Style: ${artStyle}
 ${characterInfo}
 
-Return JSON: {"images": [{"page":1, "title":"scene name", "description":"detailed scene", "characters":["name1"], "environment":"setting"}]}
+The images should be organized as:
+- Image 1: Front cover (flat 2D artwork showing the main character and story theme)
+- Images 2-${numImages + 1}: Story scenes (${numImages} total scenes that progress through the story)
+- Image ${totalImages}: Back cover (flat 2D artwork, can be a peaceful ending scene)
 
-Make ${totalImages} image objects with engaging scenes that tell the story.`}
-    ];
+For each image, I need:
+- page: The image number (1, 2, 3, etc.)
+- title: A short descriptive name for the scene
+- description: A detailed description of what should be shown in the image
+- characters: Array of character names that appear in this scene
+- environment: The setting/location where this scene takes place
+
+Think about how to break the story into ${totalImages} engaging visual scenes that flow well together and tell the complete story.
+
+Now provide the response in this exact JSON format:
+{
+  "images": [
+    {
+      "page": 1,
+      "title": "Front Cover",
+      "description": "detailed scene description here",
+      "characters": ["character name"],
+      "environment": "setting description"
+    }
+  ]
+}`;
     
-    log('info', 'Calling OpenAI for book planning');
-    
-    // Add timeout protection for planning phase
-    const planningPromise = openAIChat(planningPrompt, 'gpt-5-nano');
-    const planningTimeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Planning phase timeout after 45 seconds')), 45000)
-    );
-    
-    const planText = await Promise.race([planningPromise, planningTimeoutPromise]);
+    log('info', 'Calling Gemini for book planning');
+    const planText = await geminiChat(planningPrompt);
     log('debug', 'Raw planning response', { responseLength: planText.length, preview: planText.substring(0, 300) });
     
     let plan;
