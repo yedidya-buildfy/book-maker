@@ -707,18 +707,60 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
     updateJob(jobId, { currentPhase: `Analyzing ${charactersWithInfo.length} characters...`, completedSteps: 0 });
     log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithInfo: charactersWithInfo.length });
     
+    // Robust character analysis with timeouts and parallel processing
     const analyses = [];
     if (charactersWithInfo.length > 0) {
       // Safety: limit to max 3 characters for speed
       const maxCharacters = Math.min(charactersWithInfo.length, 3);
       log('info', `Processing ${maxCharacters} characters (limited for speed)`, { requested: charactersWithInfo.length, processing: maxCharacters });
+      console.log(`🔍 ROBUST ANALYSIS: Processing ${maxCharacters} characters in parallel with 30s timeout each`);
       
-      for(let i = 0; i < maxCharacters; i++){
-        const ch = charactersWithInfo[i];
-        log('info', `Analyzing character ${i + 1}: ${ch.name || 'Unnamed'}`, { hasInfo: true, role: ch.role });
+      // Create fallback analysis function
+      const createFallbackAnalysis = (ch) => ({
+        name: ch.name || 'Character',
+        age: ch.age || 'Child',
+        physicalAppearance: {
+          height: 'Child-appropriate height',
+          faceShape: 'Round, friendly face',
+          eyeColor: 'Bright, expressive eyes',
+          hairColor: 'Natural hair color',
+          hairStyle: 'Child-friendly hairstyle',
+          skinTone: 'Warm skin tone',
+          distinctiveFeatures: ch.description || 'Friendly appearance'
+        },
+        clothing: {
+          typicalOutfit: 'Casual, child-appropriate clothing',
+          colors: ['blue', 'yellow'],
+          accessories: 'None specified'
+        },
+        personality: {
+          traits: ['friendly', 'curious', 'kind'],
+          expressions: 'Warm, engaging expressions',
+          posture: 'Open, confident posture'
+        },
+        culturalBackground: ch.description?.includes('Jewish') ? 'Jewish' : 'Not specified',
+        role: ch.role || 'Supporting character',
+        artStyleNotes: `Suitable for ${artStyle} art style with warm, child-friendly features`
+      });
+
+      // Timeout wrapper for AI calls
+      const withTimeout = (promise, timeoutMs) => {
+        return Promise.race([
+          promise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`Character analysis timeout after ${timeoutMs}ms`)), timeoutMs)
+          )
+        ]);
+      };
+
+      // Analyze single character with robust error handling
+      const analyzeCharacterRobust = async (ch, index) => {
+        const characterName = ch.name || `Character ${index + 1}`;
+        console.log(`🔍 ANALYZING: ${characterName} | Started`);
         
-        const hasCharacterImage = ch.image && ch.image.trim();
-        const characterPrompt = `You are a character bible creator for children's books. 
+        try {
+          const hasCharacterImage = ch.image && ch.image.trim();
+          const characterPrompt = `You are a character bible creator for children's books. 
 
 I need you to create a detailed character description for visual consistency across all illustrations in ${artStyle} art style.
 
@@ -760,14 +802,13 @@ Create a detailed character bible in this exact JSON format:
 }
 
 Make it detailed enough for an artist to draw the character consistently across all illustrations, child-friendly and appropriate for the ${artStyle} art style.`;
-        
-        try {
-          log('info', `Starting character analysis for ${ch.name}`);
+          
+          // Try AI analysis with timeout
           let analysisText;
           try {
-            // Use OpenAI for character analysis if image is provided, otherwise Gemini
+            let aiPromise;
             if (hasCharacterImage) {
-              log('info', `Using OpenAI for character analysis with image: ${ch.name}`);
+              log('info', `Using OpenAI for character analysis with image: ${characterName}`);
               const messages = [
                 {role: 'system', content: 'You are a character bible creator for children\'s books.'},
                 {
@@ -778,50 +819,28 @@ Make it detailed enough for an artist to draw the character consistently across 
                   ]
                 }
               ];
-              analysisText = await openAIChat(messages, 'gpt-4o');
+              aiPromise = openAIChat(messages, 'gpt-4o');
             } else {
-              analysisText = await geminiChat(characterPrompt);
+              aiPromise = geminiChat(characterPrompt);
             }
+            
+            // 30 second timeout for AI call
+            analysisText = await withTimeout(aiPromise, 30000);
+            
           } catch (error) {
-            log('warn', 'AI analysis failed, using structured fallback', { error: error.message });
-            // Create structured fallback JSON
-            const fallbackAnalysis = {
-              name: ch.name || 'Character',
-              age: ch.age || 'Child',
-              physicalAppearance: {
-                height: 'Child-appropriate height',
-                faceShape: 'Round, friendly face',
-                eyeColor: 'Bright, expressive eyes',
-                hairColor: 'Natural hair color',
-                hairStyle: 'Child-friendly hairstyle',
-                skinTone: 'Warm skin tone',
-                distinctiveFeatures: ch.description || 'Friendly appearance'
-              },
-              clothing: {
-                typicalOutfit: 'Casual, child-appropriate clothing',
-                colors: ['blue', 'yellow'],
-                accessories: 'None specified'
-              },
-              personality: {
-                traits: ['friendly', 'curious', 'kind'],
-                expressions: 'Warm, engaging expressions',
-                posture: 'Open, confident posture'
-              },
-              culturalBackground: ch.description?.includes('Jewish') ? 'Jewish' : 'Not specified',
-              role: ch.role || 'Supporting character',
-              artStyleNotes: `Suitable for ${artStyle} art style with warm, child-friendly features`
-            };
-            analysisText = JSON.stringify(fallbackAnalysis);
+            log('warn', `AI analysis failed for ${characterName}, using fallback`, { error: error.message });
+            console.log(`⚠️  AI FAILED: ${characterName} | ${error.message} | Using fallback`);
+            return createFallbackAnalysis(ch);
           }
           
-          // Parse JSON analysis
+          // Parse JSON analysis with robust extraction
           let analysis;
           try {
-            // Try to parse as JSON first
             analysis = JSON.parse(analysisText);
-            log('info', `Character analysis completed for ${ch.name}`, { hasStructuredData: true });
+            console.log(`✅ ANALYZED: ${characterName} | AI analysis successful`);
+            return analysis;
           } catch (parseError) {
-            log('warn', 'Failed to parse character analysis JSON, trying to extract', { error: parseError.message });
+            log('warn', `Failed to parse JSON for ${characterName}, trying extraction`);
             
             // Try to extract JSON from response
             let jsonText = analysisText;
@@ -837,41 +856,54 @@ Make it detailed enough for an artist to draw the character consistently across 
             
             try {
               analysis = JSON.parse(jsonText);
-              log('info', `Character analysis extracted for ${ch.name}`, { hasStructuredData: true });
+              console.log(`✅ ANALYZED: ${characterName} | JSON extracted successfully`);
+              return analysis;
             } catch (extractError) {
-              log('error', `Failed to extract JSON for ${ch.name}, using text fallback`, { error: extractError.message });
-              // Create minimal structured fallback
-              analysis = {
-                name: ch.name || 'Character',
-                age: ch.age || 'Child',
-                physicalAppearance: { distinctiveFeatures: analysisText },
-                role: ch.role || 'Character',
-                artStyleNotes: `${artStyle} style`
-              };
+              log('warn', `JSON extraction failed for ${characterName}, using fallback`);
+              console.log(`⚠️  EXTRACT FAILED: ${characterName} | Using fallback analysis`);
+              return createFallbackAnalysis(ch);
             }
           }
           
-          analyses.push(analysis);
         } catch (error) {
-          log('error', `Character analysis failed for ${ch.name}, using minimal fallback`, { error: error.message });
-          // Minimal structured fallback
-          const fallbackAnalysis = {
-            name: ch.name || 'Character',
-            age: ch.age || 'Child',
-            physicalAppearance: {
-              distinctiveFeatures: ch.description || 'Friendly appearance'
-            },
-            role: ch.role || 'Supporting character',
-            artStyleNotes: `${artStyle} style with child-friendly features`
-          };
-          analyses.push(fallbackAnalysis);
+          log('error', `Complete analysis failure for ${characterName}`, { error: error.message });
+          console.log(`❌ FAILED: ${characterName} | Complete failure, using fallback`);
+          return createFallbackAnalysis(ch);
         }
-      }
+      };
+
+      // Process characters in parallel with Promise.allSettled to ensure no hanging
+      console.log(`🚀 PARALLEL: Starting analysis of ${maxCharacters} characters`);
+      const characterPromises = charactersWithInfo
+        .slice(0, maxCharacters)
+        .map((ch, index) => analyzeCharacterRobust(ch, index));
+      
+      const results = await Promise.allSettled(characterPromises);
+      
+      // Process results - always add an analysis, even if failed
+      results.forEach((result, index) => {
+        const ch = charactersWithInfo[index];
+        const characterName = ch.name || `Character ${index + 1}`;
+        
+        if (result.status === 'fulfilled') {
+          analyses.push(result.value);
+          console.log(`✅ SUCCESS: ${characterName} | Analysis completed`);
+        } else {
+          log('error', `Character analysis promise rejected for ${characterName}`, { error: result.reason });
+          console.log(`❌ REJECTED: ${characterName} | Using emergency fallback`);
+          analyses.push(createFallbackAnalysis(ch));
+        }
+      });
+      
+      console.log(`🎯 COMPLETED: Character analysis finished | ${analyses.length}/${maxCharacters} characters processed`);
+      
     } else {
       log('info', 'No characters with information found, skipping character analysis');
+      console.log(`ℹ️  SKIPPED: No characters with information found`);
     }
     updateJob(jobId, { completedSteps: 1, currentPhase: 'Planning book structure...' });
     log('info', 'PHASE END: Character analysis', { characterCount: analyses.length, jobId });
+    console.log(`🔄 TRANSITION: Analyzing characters → Plan JSON | Job: ${jobId} | Completed: ${analyses.length} characters`);
 
     // 2) Planning (JSON): gpt-4o
     const totalImages = numImages + 2; // story images + front cover + back cover
@@ -956,6 +988,7 @@ Provide the response in this exact JSON format:
         expectedCount: totalImages,
         jobId
       });
+      console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId} | Images planned: ${plan.images?.length || 0}`);
     }
     catch(e){
       log('warn', 'Failed to parse planning JSON, trying to extract', { error: e.message });
@@ -987,6 +1020,7 @@ Provide the response in this exact JSON format:
             imageCount: plan.images?.length || 0,
             expectedCount: totalImages
           });
+          console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId} | Images planned: ${plan.images?.length || 0} (extracted)`);
         } catch (extractError) {
           log('error', 'Extracted text was not valid JSON', { extractError: extractError.message, extractedTextPreview: jsonText.substring(0, 200) });
           throw new Error('Failed to generate valid book plan');
@@ -1131,6 +1165,7 @@ Provide the response in this exact JSON format:
     // Generate all images with limited concurrency
     const CONCURRENCY_LIMIT = 3; // Generate max 3 images simultaneously
     log('info', `PHASE START: Generating ${plan.images.length} images with concurrency ${CONCURRENCY_LIMIT}`, { jobId });
+    console.log(`🎨 START: Create cover + pages | Job: ${jobId} | Images: ${plan.images.length} | Concurrency: ${CONCURRENCY_LIMIT}`);
     
     async function generateSingleImage(imageObj, imageIndex) {
       const imageNum = imageIndex + 1;
@@ -1143,10 +1178,12 @@ Provide the response in this exact JSON format:
       });
       
       log('info', `Starting generation of image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}`, { jobId });
+      console.log(`🖼️  GENERATING: Image ${imageNum}/${plan.images.length} - ${imageObj.title || 'Untitled'} | Job: ${jobId}`);
       const buf = await openAIImage(scenePrompt(imageObj, imageIndex), '1024x1024', 3, imageObj);
       const imagePath = path.join(outDir, `image-${String(imageNum).padStart(2,'0')}.png`);
       fs.writeFileSync(imagePath, buf);
       log('info', `Image ${imageNum} generated successfully`, { jobId });
+      console.log(`✅ GENERATED: Image ${imageNum}/${plan.images.length} - ${imageObj.title || 'Untitled'} | Job: ${jobId}`);
       
       return { imagePath, imageIndex };
     }
@@ -1168,10 +1205,12 @@ Provide the response in this exact JSON format:
     
     // Add all images to PDF in correct order
     log('info', 'Adding all images to PDF in correct order', { jobId });
+    console.log(`🔄 TRANSITION: Create cover + pages → Build PDF | Job: ${jobId} | Adding ${imageResults.length} images to PDF`);
     imageResults
       .sort((a, b) => a.imageIndex - b.imageIndex)
       .forEach(({ imagePath }) => addFull(imagePath));
     log('info', 'PHASE END: All images generated and added to PDF', { jobId });
+    console.log(`📄 PDF BUILDING: All ${imageResults.length} images added to PDF | Job: ${jobId}`);
 
     // Finalize the PDF
     updateJob(jobId, { 
@@ -1180,11 +1219,13 @@ Provide the response in this exact JSON format:
       progress: 95 
     });
     log('info', 'PHASE START: Finalizing PDF', { jobId });
+    console.log(`📄 FINALIZING: Starting PDF finalization | Job: ${jobId}`);
     doc.end();
     
     // Wait for PDF to finish writing
     await new Promise(r=>stream.on('finish', r));
     log('info', 'PHASE END: PDF finalized and written to disk', { pdfPath, jobId });
+    console.log(`✅ COMPLETED: PDF finalized and written to disk | Job: ${jobId} | Path: ${pdfPath}`);
 
     // Read PDF file and upload to storage or return as download
     const pdfBuffer = fs.readFileSync(pdfPath);
@@ -1201,6 +1242,7 @@ Provide the response in this exact JSON format:
       storageType: pdfResult.type,
       jobId 
     });
+    console.log(`🎉 COMPLETE: Full pipeline finished! | Job: ${jobId} | File: ${pdfFilename} | Size: ${Math.round(pdfBuffer.length/1024)}KB`);
     
   } catch(err){
     failJob(jobId, err);
