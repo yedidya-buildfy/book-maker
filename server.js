@@ -19,25 +19,26 @@ let firebaseConfigured = false;
 
 function initializeFirebase() {
   try {
-    const serviceAccountData = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
     const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
     
-    if (!serviceAccountData || !storageBucket) {
+    if (!serviceAccountPath || !storageBucket) {
       log('info', 'Firebase environment variables not found', {
-        hasServiceAccount: !!serviceAccountData,
+        hasServiceAccountPath: !!serviceAccountPath,
         hasStorageBucket: !!storageBucket
       });
       return false;
     }
     
-    // Validate service account format
+    // Read service account from file
     let serviceAccount;
     try {
+      const serviceAccountData = fs.readFileSync(serviceAccountPath, 'utf8');
       serviceAccount = JSON.parse(serviceAccountData);
-    } catch (parseError) {
-      log('error', 'Invalid FIREBASE_SERVICE_ACCOUNT JSON format', { 
-        error: parseError.message,
-        dataPreview: serviceAccountData?.substring(0, 100) 
+    } catch (readError) {
+      log('error', 'Failed to read Firebase service account file', { 
+        error: readError.message,
+        path: serviceAccountPath 
       });
       return false;
     }
@@ -80,9 +81,10 @@ if (!firebaseConfigured) {
   log('warn', '📋 Firebase Setup Guide:');
   log('warn', '1. Go to Firebase Console → Project Settings → Service Accounts');
   log('warn', '2. Click "Generate New Private Key" and download the JSON file');
-  log('warn', '3. Add to .env: FIREBASE_SERVICE_ACCOUNT={"type":"service_account",...}');
-  log('warn', '4. Add to .env: FIREBASE_STORAGE_BUCKET=your-project.appspot.com');
-  log('warn', '5. Without Firebase, PDFs will be returned as direct downloads');
+  log('warn', '3. Save the JSON file in your project directory');
+  log('warn', '4. Add to .env: FIREBASE_SERVICE_ACCOUNT_PATH=./your-firebase-file.json');
+  log('warn', '5. Add to .env: FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app');
+  log('warn', '6. Without Firebase, PDFs will be returned as direct downloads');
 }
 
 // Enhanced logging

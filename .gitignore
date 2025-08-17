@@ -4,6 +4,9 @@
 # Environment files
 .env
 
+# Firebase service account files (contains secrets)
+*firebase*adminsdk*.json
+
 # Output files
 output/
 
