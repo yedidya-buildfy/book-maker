@@ -553,6 +553,76 @@ async function makeCharacterBoard(imagesB64){
   return await board.getBufferAsync(Jimp.MIME_PNG);
 }
 
+// Add missing functions for image generation and PDF creation
+function getJob(jobId) {
+  return jobs.get(jobId);
+}
+
+async function createPDF(plan, imageBuffers, runId) {
+  try {
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: 'portrait',
+      margins: { top: 50, bottom: 50, left: 50, right: 50 }
+    });
+    
+    const chunks = [];
+    doc.on('data', chunk => chunks.push(chunk));
+    
+    // Add title page
+    doc.fontSize(24).text(plan.title || 'Children\'s Book', { align: 'center' });
+    doc.moveDown(2);
+    
+    // Add images
+    for (let i = 0; i < imageBuffers.length; i++) {
+      if (i > 0) doc.addPage();
+      
+      const image = imageBuffers[i];
+      const img = await Jimp.read(image);
+      const resized = img.resize(500, 500, Jimp.RESIZE_BEZIER);
+      const buffer = await resized.getBufferAsync(Jimp.MIME_JPEG);
+      
+      doc.image(buffer, { fit: [400, 400], align: 'center' });
+      doc.moveDown();
+      
+      if (plan.images && plan.images[i]) {
+        doc.fontSize(14).text(plan.images[i].title || `Page ${i + 1}`, { align: 'center' });
+      }
+    }
+    
+    doc.end();
+    
+    return Buffer.concat(chunks);
+  } catch (error) {
+    log('error', 'PDF creation failed', { error: error.message });
+    throw error;
+  }
+}
+
+async function uploadToStorage(buffer, path) {
+  if (!firebaseConfigured || !bucket) {
+    return buffer.toString('base64');
+  }
+  
+  try {
+    const file = bucket.file(path);
+    await file.save(buffer, {
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: {
+          firebaseStorageDownloadTokens: crypto.randomUUID()
+        }
+      }
+    });
+    
+    await file.makePublic();
+    return `https://storage.googleapis.com/${bucket.name}/${path}`;
+  } catch (error) {
+    log('error', 'Storage upload failed, returning base64', { error: error.message });
+    return buffer.toString('base64');
+  }
+}
+
 // ---- Pipeline ----
 app.get('/api/job/:jobId', (req, res) => {
   const jobId = req.params.jobId;
