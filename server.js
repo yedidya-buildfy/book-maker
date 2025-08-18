@@ -824,81 +824,96 @@ Provide the response in this exact JSON format:
   ]
 }`;
     
-    log('info', 'Calling Gemini for book planning (fallback to OpenAI if needed)');
-    let planText;
-    try {
-      planText = await geminiChat(planningPrompt);
-    } catch (error) {
-      log('warn', 'Gemini failed, falling back to OpenAI', { error: error.message });
-      // Fallback to OpenAI with improved prompt
-      const openAIPrompt = [
-        {role: 'system', content: 'You are a children\'s book art director.'},
-        {role: 'user', content: planningPrompt}
-      ];
-      planText = await openAIChat(openAIPrompt, 'gpt-3.5-turbo');
-    }
-    log('debug', 'Raw planning response', { responseLength: planText.length, preview: planText.substring(0, 300) });
+    // Serverless-optimized book planning (skip AI to avoid timeouts)
+    log('info', 'Using structured book planning (serverless optimized)');
+    console.log(`📋 FAST PLANNING: Creating structured book plan for ${totalImages} images`);
     
-    let plan;
-    try{ 
-      plan = JSON.parse(planText);
-      updateJob(jobId, { completedSteps: 2, currentPhase: 'Starting image generation...' });
-      // Validate each image has required fields
-      if (plan.images) {
-        plan.images.forEach((img) => {
-          if (!img.mood) img.mood = 'Warm, engaging';
-          if (!img.composition) img.composition = 'Balanced composition focusing on main characters';
+    // Create structured plan based on story and characters
+    const createServerlessPlan = () => {
+      const images = [];
+      const mainCharacter = characters.find(c => c.role?.toLowerCase().includes('main')) || characters[0] || { name: 'Character' };
+      
+      // Front Cover
+      images.push({
+        page: 1,
+        title: `${title} - Front Cover`,
+        description: `Front cover illustration featuring ${mainCharacter.name} in the ${artStyle} style. ${mainCharacter.description || 'A friendly character'} stands prominently in the scene that represents the story theme. The setting suggests ${story ? story.substring(0, 100) : 'an engaging children\'s story'}. Warm, inviting colors and child-friendly composition.`,
+        characters: [mainCharacter.name],
+        environment: "Story setting that represents the main theme",
+        mood: "Welcoming, engaging",
+        composition: `${mainCharacter.name} prominently featured, eye-catching title placement`
+      });
+      
+      // Story Pages
+      for (let i = 2; i <= numImages + 1; i++) {
+        const pageNum = i - 1;
+        const isEarly = pageNum <= numImages / 3;
+        const isMiddle = pageNum > numImages / 3 && pageNum <= (2 * numImages / 3);
+        const isLate = pageNum > (2 * numImages / 3);
+        
+        let mood, environment, title;
+        if (isEarly) {
+          mood = "Curious, beginning adventure";
+          environment = "Starting location, safe and familiar";
+          title = `${title} - Beginning the Journey`;
+        } else if (isMiddle) {
+          mood = "Adventurous, discovering";
+          environment = "Main adventure setting";
+          title = `${title} - The Adventure Unfolds`;
+        } else {
+          mood = "Triumphant, learning";
+          environment = "Resolution setting";
+          title = `${title} - Resolution`;
+        }
+        
+        images.push({
+          page: i,
+          title: `${title} - Page ${pageNum}`,
+          description: `${artStyle} illustration showing ${mainCharacter.name} in the story. ${story ? story.substring(0, 150) : 'The character experiences growth and adventure'}. Scene depicts character development and story progression appropriate for children ages 3-8.`,
+          characters: [mainCharacter.name],
+          environment,
+          mood,
+          composition: `${mainCharacter.name} in engaging scene composition, child-friendly perspective`
         });
       }
-      updateJob(jobId, { completedSteps: 2, currentPhase: 'Starting image generation...' });
-      log('info', 'PHASE END: Book planning (parsed JSON)', { 
-        imageCount: plan.images?.length || 0,
-        expectedCount: totalImages,
-        jobId
+      
+      // Back Cover
+      images.push({
+        page: totalImages,
+        title: `${title} - Back Cover`,
+        description: `Back cover illustration in ${artStyle} style showing a peaceful conclusion to the story. ${mainCharacter.name} appears content and happy, having completed their journey. Gentle, satisfying conclusion that appeals to children.`,
+        characters: [mainCharacter.name],
+        environment: "Peaceful, concluding setting",
+        mood: "Satisfied, peaceful",
+        composition: "Calm, reassuring final scene"
       });
-      console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId} | Images planned: ${plan.images?.length || 0}`);
-    }
-    catch(e){
-      log('warn', 'Failed to parse planning JSON, trying to extract', { error: e.message });
       
-      // First try to extract from markdown code blocks
-      let jsonText = planText;
-      const codeBlockMatch = planText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (codeBlockMatch) {
-        jsonText = codeBlockMatch[1].trim();
-      } else {
-        // Fallback to original extraction method
-        const m = planText.match(/\{[\s\S]*\}$/);
-        if(m) {
-          jsonText = m[0];
-        }
-      }
-      
-      if(jsonText) {
-        try {
-          plan = JSON.parse(jsonText);
-          // Validate extracted plan and add missing fields
-          if (plan.images) {
-            plan.images.forEach((img) => {
-              if (!img.mood) img.mood = 'Warm, engaging';
-              if (!img.composition) img.composition = 'Balanced composition focusing on main characters';
-            });
-          }
-          log('info', 'PHASE END: Book planning (extracted JSON)', { 
-            imageCount: plan.images?.length || 0,
-            expectedCount: totalImages
-          });
-          console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId} | Images planned: ${plan.images?.length || 0} (extracted)`);
-        } catch (extractError) {
-          log('error', 'Extracted text was not valid JSON', { extractError: extractError.message, extractedTextPreview: jsonText.substring(0, 200) });
-          throw new Error('Failed to generate valid book plan');
-        }
-      }
-      else {
-        log('error', 'No valid JSON found in planning response', { response: planText });
-        throw new Error('Failed to generate valid book plan');
-      }
+      return { images };
+    };
+    
+    const generatedPlan = createServerlessPlan();
+    const planText = JSON.stringify(generatedPlan);
+    console.log(`✅ PLANNED: Book structure created instantly with ${generatedPlan.images.length} images`);
+    log('debug', 'Structured planning response', { responseLength: planText.length, imageCount: generatedPlan.images.length });
+    
+    // Use the structured plan directly (no parsing needed)
+    const plan = generatedPlan;
+    updateJob(jobId, { completedSteps: 2, currentPhase: 'Starting image generation...' });
+    
+    // Validate each image has required fields (already structured properly)
+    if (plan.images) {
+      plan.images.forEach((img) => {
+        if (!img.mood) img.mood = 'Warm, engaging';
+        if (!img.composition) img.composition = 'Balanced composition focusing on main characters';
+      });
     }
+    
+    log('info', 'PHASE END: Book planning (structured plan)', { 
+      imageCount: plan.images?.length || 0,
+      expectedCount: totalImages,
+      jobId
+    });
+    console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId} | Images planned: ${plan.images?.length || 0}`);
     
     // Validate plan structure
     if (!plan.images || !Array.isArray(plan.images)) {
