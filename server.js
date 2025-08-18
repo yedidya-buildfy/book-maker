@@ -713,7 +713,7 @@ async function generateBookAsync(jobId, { title, story, numImages, artStyle, cha
       // Safety: limit to max 3 characters for speed
       const maxCharacters = Math.min(charactersWithInfo.length, 3);
       log('info', `Processing ${maxCharacters} characters (limited for speed)`, { requested: charactersWithInfo.length, processing: maxCharacters });
-      console.log(`🔍 ROBUST ANALYSIS: Processing ${maxCharacters} characters in parallel with 5s timeout each`);
+      console.log(`🔍 ROBUST ANALYSIS: Processing ${maxCharacters} characters in parallel with 8.5s timeout each`);
       
       // Create fallback analysis function
       const createFallbackAnalysis = (ch) => ({
@@ -824,8 +824,8 @@ Make it detailed enough for an artist to draw the character consistently across 
               aiPromise = geminiChat(characterPrompt);
             }
             
-            // 5 second timeout for serverless compatibility
-            analysisText = await withTimeout(aiPromise, 5000);
+            // 8.5 second timeout for serverless compatibility
+            analysisText = await withTimeout(aiPromise, 8500);
             
           } catch (error) {
             log('warn', `AI analysis failed for ${characterName}, using fallback`, { error: error.message });
