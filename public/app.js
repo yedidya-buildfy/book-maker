@@ -259,6 +259,31 @@ async function pollJobProgress(jobId) {
       }
     }
     
+    // Handle image generation phase - trigger individual image generation
+    if (job.plan && job.currentPhase && job.currentPhase.includes('Ready for image generation')) {
+      console.log(`🚀 STARTING: Individual image generation | Job: ${jobId} | Images: ${job.totalImages}`);
+      // Start the first image
+      await generateNextImage(jobId, 0);
+      return; // Don't continue polling, generateNextImage will handle it
+    }
+    
+    // Check if we're in image generation and need to trigger next image
+    if (job.currentImageIndex !== undefined && job.generatedImages < job.totalImages) {
+      const nextIndex = job.generatedImages;
+      if (nextIndex < job.totalImages && nextIndex !== job.currentImageIndex) {
+        console.log(`🔄 NEXT IMAGE: Starting image ${nextIndex + 1}/${job.totalImages} | Job: ${jobId}`);
+        await generateNextImage(jobId, nextIndex);
+        return; // generateNextImage will handle polling
+      }
+    }
+    
+    // Handle PDF generation trigger
+    if (job.currentPhase && job.currentPhase.includes('All images complete - Building PDF')) {
+      console.log(`🚀 TRIGGERING: PDF generation | Job: ${jobId}`);
+      // The server will handle PDF generation automatically
+      // Continue polling to track PDF progress
+    }
+    
     if (job.status === 'completed') {
       // Reset polling state and stop
       lastLoggedPhase = '';
@@ -314,6 +339,34 @@ async function pollJobProgress(jobId) {
     setLoading(false, '');
     els.status.textContent = 'Error checking progress: ' + err.message;
     els.generateBtn.disabled = false;
+  }
+}
+
+// Individual image generation (serverless-optimized)
+async function generateNextImage(jobId, imageIndex) {
+  try {
+    console.log(`🎨 GENERATING IMAGE: ${imageIndex + 1} | Job: ${jobId}`);
+    
+    const response = await fetch('/api/generate-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, imageIndex })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Image generation failed: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    console.log(`✅ IMAGE STARTED: ${result.imageNum} | Job: ${jobId}`);
+    
+    // Wait a moment, then resume polling
+    setTimeout(() => pollJobProgress(jobId), 3000);
+    
+  } catch (error) {
+    console.error('Image generation error:', error);
+    // Continue polling on error
+    setTimeout(() => pollJobProgress(jobId), 2000);
   }
 }
 

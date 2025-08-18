@@ -573,6 +573,176 @@ app.get('/api/job/:jobId', (req, res) => {
   res.json(job);
 });
 
+// Individual image generation endpoint (serverless-optimized)
+app.post('/api/generate-image', async (req, res) => {
+  try {
+    const { jobId, imageIndex } = req.body;
+    
+    if (!jobId || typeof imageIndex !== 'number') {
+      return res.status(400).json({ error: 'Missing jobId or imageIndex' });
+    }
+    
+    const job = getJob(jobId);
+    if (!job || !job.plan) {
+      return res.status(404).json({ error: 'Job not found or plan missing' });
+    }
+    
+    const imageObj = job.plan.images[imageIndex];
+    if (!imageObj) {
+      return res.status(404).json({ error: 'Image not found in plan' });
+    }
+    
+    const imageNum = imageIndex + 1;
+    log('info', `Starting individual image generation ${imageNum}/${job.plan.images.length}`, { jobId, imageIndex });
+    
+    // Return immediately
+    res.json({ status: 'generating', imageIndex, imageNum });
+    
+    // Generate image in background
+    try {
+      // Update progress
+      updateJob(jobId, {
+        currentPhase: `Generating image ${imageNum}/${job.plan.images.length}: ${imageObj.title || 'Untitled'}...`,
+        currentImageIndex: imageIndex
+      });
+      
+      console.log(`🖼️ GENERATING: Image ${imageNum}/${job.plan.images.length} - ${imageObj.title} | Job: ${jobId}`);
+      
+      // Create prompt (simplified for serverless)
+      const prompt = `Children's book illustration in ${job.artStyle || 'Watercolor'} style: ${imageObj.description}. Characters: ${imageObj.characters?.join(', ') || 'main character'}. Environment: ${imageObj.environment}. Mood: ${imageObj.mood}. Child-friendly, warm colors, professional illustration quality. NO text or words in image.`;
+      
+      const buf = await openAIImage(prompt, '1024x1024', 2, imageObj);
+      
+      // Store image data in job
+      const imageData = buf.toString('base64');
+      updateJob(jobId, {
+        [`image_${imageIndex}`]: imageData,
+        generatedImages: (job.generatedImages || 0) + 1
+      });
+      
+      console.log(`✅ GENERATED: Image ${imageNum}/${job.plan.images.length} | Job: ${jobId}`);
+      
+      // Check if all images are complete
+      const updatedJob = getJob(jobId);
+      if (updatedJob.generatedImages >= updatedJob.totalImages) {
+        // All images complete - trigger PDF generation
+        updateJob(jobId, {
+          currentPhase: 'All images complete - Building PDF...',
+          completedSteps: updatedJob.totalImages + 2
+        });
+        console.log(`🎉 ALL IMAGES COMPLETE: Starting PDF generation | Job: ${jobId}`);
+        
+        // Trigger PDF generation via separate endpoint
+        setTimeout(async () => {
+          try {
+            const pdfResponse = await fetch(`${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`}/api/generate-pdf`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jobId })
+            });
+            if (!pdfResponse.ok) {
+              log('error', 'PDF generation request failed', { status: pdfResponse.status });
+            }
+          } catch (error) {
+            log('error', 'PDF generation trigger failed', { error: error.message });
+          }
+        }, 1000);
+      }
+      
+    } catch (error) {
+      log('error', `Image generation failed for ${imageNum}`, { error: error.message, jobId });
+      updateJob(jobId, {
+        currentPhase: `Image ${imageNum} failed - ${error.message}`,
+        error: error.message
+      });
+    }
+    
+  } catch (err) {
+    log('error', 'Image generation endpoint error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Individual PDF generation endpoint (serverless-optimized)
+app.post('/api/generate-pdf', async (req, res) => {
+  try {
+    const { jobId } = req.body;
+    
+    if (!jobId) {
+      return res.status(400).json({ error: 'Missing jobId' });
+    }
+    
+    const job = getJob(jobId);
+    if (!job || !job.plan) {
+      return res.status(404).json({ error: 'Job not found or plan missing' });
+    }
+    
+    log('info', 'Starting PDF generation', { jobId });
+    
+    // Return immediately
+    res.json({ status: 'generating pdf' });
+    
+    // Generate PDF in background
+    try {
+      updateJob(jobId, {
+        currentPhase: 'Finalizing PDF - Creating document layout...',
+        completedSteps: job.totalImages + 2
+      });
+      
+      console.log(`📄 GENERATING: PDF for ${job.plan.title} | Job: ${jobId}`);
+      
+      // Collect all generated images from job data
+      const imageDataList = [];
+      for (let i = 0; i < job.totalImages; i++) {
+        const imageData = job[`image_${i}`];
+        if (imageData) {
+          imageDataList.push(Buffer.from(imageData, 'base64'));
+        }
+      }
+      
+      if (imageDataList.length !== job.totalImages) {
+        throw new Error(`Missing images: found ${imageDataList.length} of ${job.totalImages}`);
+      }
+      
+      // Generate PDF with all images
+      const pdfBuffer = await createPDF(job.plan, imageDataList, job.runId);
+      
+      // Upload PDF to Firebase
+      const pdfFilename = `${job.runId}-${job.plan.title.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+      const pdfUrl = await uploadToStorage(pdfBuffer, `books/${pdfFilename}`);
+      
+      // Complete the job
+      updateJob(jobId, {
+        status: 'completed',
+        currentPhase: 'PDF generation complete!',
+        completedSteps: job.totalImages + 3,
+        result: {
+          pdf: {
+            type: 'url',
+            url: pdfUrl,
+            filename: pdfFilename
+          }
+        }
+      });
+      
+      console.log(`🎉 PDF COMPLETE: ${pdfFilename} | Job: ${jobId}`);
+      log('info', 'PDF generation completed successfully', { jobId, filename: pdfFilename });
+      
+    } catch (error) {
+      log('error', 'PDF generation failed', { error: error.message, jobId });
+      updateJob(jobId, {
+        status: 'failed',
+        error: error.message,
+        currentPhase: 'PDF generation failed - ' + error.message
+      });
+    }
+    
+  } catch (err) {
+    log('error', 'PDF generation endpoint error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/generate-story-idea', async (req, res) => {
   log('info', 'PHASE START: Story idea generation');
   
@@ -940,192 +1110,33 @@ Provide the response in this exact JSON format:
       jobId
     });
 
-    // 3) Generate images and build PDF simultaneously
-    log('info', 'PHASE START: Image generation and PDF creation');
+    // 3) Prepare for image generation (serverless-optimized)
+    log('info', 'PHASE START: Preparing for image generation');
     const runId = Date.now().toString(36);
-    // Use /tmp directory for serverless environments
-    const outDir = path.join('/tmp', runId);
-    fs.mkdirSync(outDir, { recursive: true });
-    log('info', `Created output directory: ${outDir}`);
-
-    const charImages = characters.filter(c => c.image).map(c => c.image);
-    log('info', `Creating character board from ${charImages.length} character images`);
-    const board = await makeCharacterBoard(charImages);
-    if (board) {
-      fs.writeFileSync(path.join(outDir, 'characters-board.png'), board);
-      log('info', 'Character board saved');
-    }
-
-    const charSummary = analyses.length > 0 
-      ? analyses.map(a => {
-          // Create detailed character description from structured analysis
-          const physical = a.physicalAppearance ? 
-            `Physical: ${JSON.stringify(a.physicalAppearance).replace(/[{}"]/g, '')}` : '';
-          const clothing = a.clothing ? 
-            `Clothing: ${JSON.stringify(a.clothing).replace(/[{}"]/g, '')}` : '';
-          const personality = a.personality ? 
-            `Personality: ${JSON.stringify(a.personality).replace(/[{}"]/g, '')}` : '';
-          return `${a.name} (${a.role}): ${[physical, clothing, personality].filter(Boolean).join(', ')}`;
-        }).join('\n')
-      : characters.map(c => `${c.name}: ${c.role}`).join('\n');
-    const hasCharacterBoard = !!board;
-
-    function scenePrompt(imageObj, imageIndex) {
-      const isFirstImage = imageIndex === 0;
-      const isLastImage = imageIndex === plan.images.length - 1;
-      
-      // Determine if this is a cover
-      const isCover = isFirstImage || isLastImage;
-      const coverType = isFirstImage ? 'FRONT COVER ARTWORK' : (isLastImage ? 'BACK COVER ARTWORK' : '');
-      
-      const prompt = [
-        // Main description - emphasize SINGLE SCENE
-        isCover ? `${coverType} (flat 2D illustration, full-bleed portrait)` : `SINGLE SCENE: ${imageObj.title || 'Story Scene'}`,
-        `Scene: ${imageObj.description || ''}`,
-        
-        // Character references  
-        imageObj.characters && imageObj.characters.length > 0 ? `Characters: ${imageObj.characters.join(', ')}` : '',
-        hasCharacterBoard ? `Reference: match faces, hair, clothing and palette from the attached character board (internal)` : '',
-        analyses.length > 0 ? `Character Bible:\n${charSummary}` : `Character Info:\n${charSummary}`,
-        
-        // Visual specifications
-        `Environment: ${imageObj.environment || ''}`,
-        `Mood: ${imageObj.mood || 'warm, engaging'}`,
-        `Composition: ${imageObj.composition || 'balanced composition focusing on main characters'}`,
-        `Lighting: ${imageObj.lighting || 'warm, consistent lighting'}`,
-        `Color Palette: ${imageObj.palette || ''} (maintain consistency across all images)`,
-        `Props: ${imageObj.props || ''}`,
-        `Continuity: ${imageObj.continuity || ''}`,
-        
-        // Style specifications
-        `Art Style: ${artStyle} - maintain absolute consistency`,
-        imageObj.style_notes ? `Style Notes: ${imageObj.style_notes}` : '',
-        
-        // Quality and constraints
-        `Quality: professional children's book illustration, consistent art style, warm cozy lighting, soft textures, gentle outlines, child-safe`,
-        
-        // Critical constraints
-        `CRITICAL CONSTRAINTS:`,
-        `- Show ONLY ONE SCENE, not multiple scenes or montages`,
-        `- NEVER include any text, letters, or words in the illustration`,
-        `- Maintain perfect character consistency using character bible`,
-        `- Keep lighting and color palette consistent with other images`,
-        isCover ? `- This is ${coverType.toLowerCase()}, NOT a photo of a book or book mockup` : '',
-        isCover ? `- Flat 2D illustration only, full-bleed portrait format` : '',
-        `- ${artStyle} style maintained throughout`,
-        
-        // Negative prompts
-        `AVOID: text, letters, words, signatures, watermarks, book mockups, 3D book renders, photo of book${isCover ? ', book covers with visible spines or thickness' : ''}, multiple scenes, scene montages, comic panels`,
-        
-        // Strong style enforcement at the end
-        `Make all as one scene, style: ${artStyle}`
-      ].filter(Boolean).join('\n');
-      
-      log('debug', `Generated scene prompt for ${isCover ? coverType : 'story scene'} ${imageObj.page}`, { 
-        title: imageObj.title, 
-        promptLength: prompt.length,
-        isCover,
-        hasCharacterBoard
-      });
-      return prompt;
-    }
-
-    // Create PDF filename from book title (sanitize for filesystem)
-    const sanitizedTitle = title.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_').substring(0, 50);
-    const pdfFilename = sanitizedTitle ? `${sanitizedTitle}.pdf` : 'book.pdf';
-    const pdfPath = path.join(outDir, pdfFilename);
-    const doc = new PDFDocument({ autoFirstPage: false });
-    const stream = fs.createWriteStream(pdfPath);
-    doc.pipe(stream);
-    const A4 = { w: 595.28, h: 841.89 };
-
-    function addFull(imagePath) {
-      log('debug', `Adding page to PDF: ${path.basename(imagePath)}`);
-      doc.addPage({ size: 'A4', margin: 0 });
-      doc.image(imagePath, 0, 0, { width: A4.w, height: A4.h });
-    }
-
-    // Generate all images with limited concurrency
-    const CONCURRENCY_LIMIT = 3; // Generate max 3 images simultaneously
-    log('info', `PHASE START: Generating ${plan.images.length} images with concurrency ${CONCURRENCY_LIMIT}`, { jobId });
-    console.log(`🎨 START: Create cover + pages | Job: ${jobId} | Images: ${plan.images.length} | Concurrency: ${CONCURRENCY_LIMIT}`);
     
-    async function generateSingleImage(imageObj, imageIndex) {
-      const imageNum = imageIndex + 1;
-      
-      // Update progress for this image
-      updateJob(jobId, { 
-        completedSteps: 2 + imageIndex,
-        currentPhase: `Generating image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}...`,
-        progress: Math.round(((2 + imageIndex) / (plan.images.length + 3)) * 100)
-      });
-      
-      log('info', `Starting generation of image ${imageNum}/${plan.images.length}: ${imageObj.title || 'Untitled'}`, { jobId });
-      console.log(`🖼️  GENERATING: Image ${imageNum}/${plan.images.length} - ${imageObj.title || 'Untitled'} | Job: ${jobId}`);
-      const buf = await openAIImage(scenePrompt(imageObj, imageIndex), '1024x1024', 3, imageObj);
-      const imagePath = path.join(outDir, `image-${String(imageNum).padStart(2,'0')}.png`);
-      fs.writeFileSync(imagePath, buf);
-      log('info', `Image ${imageNum} generated successfully`, { jobId });
-      console.log(`✅ GENERATED: Image ${imageNum}/${plan.images.length} - ${imageObj.title || 'Untitled'} | Job: ${jobId}`);
-      
-      return { imagePath, imageIndex };
-    }
-    
-    // Process images with limited concurrency
-    const imageResults = [];
-    for (let i = 0; i < plan.images.length; i += CONCURRENCY_LIMIT) {
-      const batch = plan.images.slice(i, i + CONCURRENCY_LIMIT);
-      const batchPromises = batch.map((imageObj, batchIndex) => 
-        generateSingleImage(imageObj, i + batchIndex)
-      );
-      
-      log('info', `Processing batch ${Math.floor(i/CONCURRENCY_LIMIT) + 1} with ${batch.length} images`, { jobId });
-      const batchResults = await Promise.all(batchPromises);
-      imageResults.push(...batchResults);
-      
-      log('info', `Batch ${Math.floor(i/CONCURRENCY_LIMIT) + 1} completed`, { jobId });
-    }
-    
-    // Add all images to PDF in correct order
-    log('info', 'Adding all images to PDF in correct order', { jobId });
-    console.log(`🔄 TRANSITION: Create cover + pages → Build PDF | Job: ${jobId} | Adding ${imageResults.length} images to PDF`);
-    imageResults
-      .sort((a, b) => a.imageIndex - b.imageIndex)
-      .forEach(({ imagePath }) => addFull(imagePath));
-    log('info', 'PHASE END: All images generated and added to PDF', { jobId });
-    console.log(`📄 PDF BUILDING: All ${imageResults.length} images added to PDF | Job: ${jobId}`);
-
-    // Finalize the PDF
+    // Store the plan and job info for individual image generation calls
     updateJob(jobId, { 
-      completedSteps: plan.images.length + 2, 
-      currentPhase: 'Finalizing PDF...', 
-      progress: 95 
+      completedSteps: 2, 
+      currentPhase: 'Ready for image generation...',
+      plan: plan,
+      runId: runId,
+      totalImages: plan.images.length,
+      generatedImages: 0
     });
-    log('info', 'PHASE START: Finalizing PDF', { jobId });
-    console.log(`📄 FINALIZING: Starting PDF finalization | Job: ${jobId}`);
-    doc.end();
     
-    // Wait for PDF to finish writing
-    await new Promise(r=>stream.on('finish', r));
-    log('info', 'PHASE END: PDF finalized and written to disk', { pdfPath, jobId });
-    console.log(`✅ COMPLETED: PDF finalized and written to disk | Job: ${jobId} | Path: ${pdfPath}`);
-
-    // Read PDF file and upload to storage or return as download
-    const pdfBuffer = fs.readFileSync(pdfPath);
-    const pdfResult = await uploadPDFToStorage(pdfBuffer, pdfFilename);
+    // Trigger individual image generation (serverless-optimized)
+    console.log(`🚀 TRIGGERING: Starting individual image generation | Job: ${jobId}`);
     
-    const result = { 
-      pdf: pdfResult,
-      runId 
-    };
-    completeJob(jobId, result);
-    log('info', 'Book generation completed successfully', { 
-      filename: pdfFilename, 
-      pdfSize: pdfBuffer.length, 
-      storageType: pdfResult.type,
-      jobId 
+    // Start the first image generation
+    updateJob(jobId, {
+      completedSteps: 2,
+      currentPhase: `Generating image 1/${plan.images.length}: ${plan.images[0]?.title || 'Untitled'}...`,
+      progress: Math.round((2 / (plan.images.length + 3)) * 100),
+      currentImageIndex: 0
     });
-    console.log(`🎉 COMPLETE: Full pipeline finished! | Job: ${jobId} | File: ${pdfFilename} | Size: ${Math.round(pdfBuffer.length/1024)}KB`);
+    
+    log('info', 'PHASE END: Background processing setup complete', { jobId });
+    console.log(`🎯 SETUP COMPLETE: Job ready for image generation | Job: ${jobId}`);
     
   } catch(err){
     failJob(jobId, err);
