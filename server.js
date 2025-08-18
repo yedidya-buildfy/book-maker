@@ -1,3 +1,8 @@
+// ====================================================================
+// CHILDREN'S BOOK GENERATOR SERVER
+// Serverless-optimized for Vercel with proper error handling
+// ====================================================================
+
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
@@ -8,14 +13,38 @@ import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { createFallbackImage, createSetupGuideImage } from './fallback-images.js';
 
+// ====================================================================
+// CONFIGURATION & INITIALIZATION
+// ====================================================================
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// Initialize Firebase Admin (optional - can work without it)
+// Firebase Storage
 let bucket = null;
 let firebaseConfigured = false;
+
+// Job storage (in-memory for serverless)
+const jobs = new Map();
+
+// ====================================================================
+// LOGGING UTILITY
+// ====================================================================
+
+function log(level, message, data = null) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] ${level.toUpperCase()}: ${message}`;
+  console.log(logMessage);
+  if (data) {
+    console.log('Data:', JSON.stringify(data, null, 2));
+  }
+}
+
+// ====================================================================
+// FIREBASE INITIALIZATION
+// ====================================================================
 
 function initializeFirebase() {
   try {
@@ -34,15 +63,13 @@ function initializeFirebase() {
       return false;
     }
     
-    // Create service account object from environment variables
     const serviceAccount = {
       type: 'service_account',
       project_id: projectId,
-      private_key: privateKey.replace(/\\n/g, '\n'), // Handle escaped newlines
+      private_key: privateKey.replace(/\\n/g, '\n'),
       client_email: clientEmail
     };
     
-    // Validate storage bucket format (should be just bucket name, not URL)
     const bucketName = storageBucket.includes('://') ? 
       storageBucket.split('/').pop().replace('.firebasestorage.app/files', '.appspot.com') :
       storageBucket;
@@ -64,51 +91,30 @@ function initializeFirebase() {
   }
 }
 
-// Try to initialize Firebase
+// Initialize Firebase
 firebaseConfigured = initializeFirebase();
 
 if (!firebaseConfigured) {
-  log('warn', '📋 Firebase Setup Guide:');
-  log('warn', '1. Go to Firebase Console → Project Settings → Service Accounts');
-  log('warn', '2. Click "Generate New Private Key" and download the JSON file');
-  log('warn', '3. Add to .env: FIREBASE_PROJECT_ID=your-project-id');
-  log('warn', '4. Add to .env: FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@your-project.iam.gserviceaccount.com');
-  log('warn', '5. Add to .env: FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"');
-  log('warn', '6. Add to .env: FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app');
-  log('warn', '7. Without Firebase, PDFs will be returned as direct downloads');
+  log('warn', '📋 Firebase not configured - PDFs will be returned as direct downloads');
 }
 
-// Enhanced logging
-function log(level, message, data = null) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${level.toUpperCase()}: ${message}`;
-  console.log(logMessage);
-  if (data) {
-    console.log('Data:', JSON.stringify(data, null, 2));
-  }
-}
+// ====================================================================
+// MIDDLEWARE SETUP
+// ====================================================================
 
-if(!OPENAI_API_KEY){
-  log('error', 'Missing OPENAI_API_KEY in environment variables');
-  console.error('OPENAI_API_KEY is required but not set. Please configure it in Vercel dashboard.');
-}
-
-if(!GEMINI_API_KEY){
-  log('error', 'Missing GEMINI_API_KEY in environment variables');
-  console.error('GEMINI_API_KEY is required but not set. Please configure it in Vercel dashboard.');
-}
-
-log('info', `Server starting on port ${PORT}`);
-log('info', 'OpenAI API Key configured: ' + (OPENAI_API_KEY ? 'Yes' : 'No'));
-
-app.use(express.json({limit: '40mb'}));
-
-// Static file serving
+app.use(express.json({ limit: '40mb' }));
 app.use('/output', express.static('output'));
 app.use(express.static('public'));
 
-// Job management system
-const jobs = new Map();
+// Global error handler
+app.use((err, req, res, next) => {
+  log('error', 'Global error handler', { error: err.message, stack: err.stack });
+  res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
+// ====================================================================
+// JOB MANAGEMENT SYSTEM
+// ====================================================================
 
 function createJob(id, title) {
   const job = {
@@ -157,55 +163,71 @@ function failJob(id, error) {
   }
 }
 
-// ---- OpenAI helpers ----
+function getJob(jobId) {
+  return jobs.get(jobId);
+}
+
+// ====================================================================
+// UTILITY FUNCTIONS
+// ====================================================================
+
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function openAIChat(messages, model = 'gpt-5-nano', maxRetries = 3){
+async function makeTimeout(promise, timeoutMs, errorMessage) {
+  const timeoutPromise = new Promise((_, reject) => 
+    setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+  );
+  return Promise.race([promise, timeoutPromise]);
+}
+
+// ====================================================================
+// API CLIENT FUNCTIONS
+// ====================================================================
+
+// OpenAI Chat API
+async function openAIChat(messages, model = 'gpt-4o-mini', maxRetries = 3) {
   const startTime = Date.now();
   log('info', `Starting OpenAI Chat request`, { model, messageCount: messages.length });
   
-  // Add timeout based on model type
-  const timeoutMs = model.includes('gpt-4o') ? 60000 : 
-                    model.includes('gpt-5-nano') ? 15000 : 30000; // 15s for nano, 60s for vision, 30s for others
+  const timeoutMs = model.includes('gpt-4o') ? 60000 : 30000;
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // gpt-5-nano only supports temperature: 1 (default)
-      const requestBody = model.includes('gpt-5-nano') ? 
-        { model, messages } : 
-        { model, messages, temperature: 0.8 };
-      log('debug', `Chat request attempt ${attempt}/${maxRetries}`, requestBody);
-      
-      // Create timeout promise
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs)
-      );
+      const requestBody = { model, messages, temperature: 0.8 };
+      log('debug', `Chat request attempt ${attempt}/${maxRetries}`, { model });
       
       const fetchPromise = fetch('https://api.openai.com/v1/chat/completions', {
-        method:'POST',
-        headers:{'Authorization':`Bearer ${OPENAI_API_KEY}`,'Content-Type':'application/json'},
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify(requestBody)
       });
       
-      const res = await Promise.race([fetchPromise, timeoutPromise]);
+      const res = await makeTimeout(fetchPromise, timeoutMs, `Request timeout after ${timeoutMs}ms`);
       
       const responseTime = Date.now() - startTime;
       log('info', `OpenAI Chat response received in ${responseTime}ms`, { status: res.status, attempt });
       
-      if(!res.ok){ 
+      if (!res.ok) { 
         const errorText = await res.text();
-        const errorData = JSON.parse(errorText);
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch (e) {
+          errorData = { error: { message: errorText } };
+        }
         
-        // Check if it's a rate limit error
         if (res.status === 429 || errorData.error?.code === 'rate_limit_exceeded') {
-          const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff
+          const waitTime = Math.pow(2, attempt) * 1000;
           log('warn', `Rate limit hit, retrying in ${waitTime}ms`, { attempt, status: res.status });
           
           if (attempt < maxRetries) {
             await sleep(waitTime);
-            continue; // Retry
+            continue;
           }
         }
         
@@ -214,14 +236,8 @@ async function openAIChat(messages, model = 'gpt-5-nano', maxRetries = 3){
       }
       
       const data = await res.json();
-      log('debug', 'Chat response data', { 
-        hasChoices: !!data.choices, 
-        choiceCount: data.choices?.length || 0,
-        usage: data.usage,
-        attempt
-      });
-      
       const content = data.choices?.[0]?.message?.content || '';
+      
       log('info', `OpenAI Chat completed successfully`, { 
         responseLength: content.length,
         tokensUsed: data.usage?.total_tokens || 'unknown',
@@ -238,7 +254,6 @@ async function openAIChat(messages, model = 'gpt-5-nano', maxRetries = 3){
         throw error;
       }
       
-      // Wait before retrying
       const waitTime = Math.pow(2, attempt) * 1000;
       log('info', `Waiting ${waitTime}ms before retry ${attempt + 1}/${maxRetries}`);
       await sleep(waitTime);
@@ -246,47 +261,45 @@ async function openAIChat(messages, model = 'gpt-5-nano', maxRetries = 3){
   }
 }
 
-async function openAIImage(prompt, size='1024x1024', maxRetries = 3, fallbackInfo = null){
+// OpenAI Image Generation
+async function openAIImage(prompt, size = '1024x1024', maxRetries = 3, fallbackInfo = null) {
   const startTime = Date.now();
   log('info', `Starting image generation`, { promptLength: prompt.length, size, hasFallbackInfo: !!fallbackInfo });
   
-  // Check if OpenAI API key is available
   if (!OPENAI_API_KEY || OPENAI_API_KEY === 'undefined') {
     log('warn', 'OpenAI API key not configured, using fallback image generation');
     return await generateFallbackImage(fallbackInfo, size);
   }
   
-  // DALL-E can be very slow, set generous timeout
-  const timeoutMs = 120000; // 2 minutes per image
+  const timeoutMs = 120000; // 2 minutes for DALL-E
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const requestBody = { 
         model: 'dall-e-3', 
-        prompt: prompt.substring(0, 4000), // DALL-E 3 has prompt limits
+        prompt: prompt.substring(0, 4000),
         size,
         quality: 'standard',
         n: 1
       };
-      log('debug', `DALL-E attempt ${attempt}/${maxRetries}`, { model: requestBody.model, size, promptPreview: prompt.substring(0, 100) + '...' });
       
-      // Create timeout promise for image generation
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Image generation timeout after ${timeoutMs}ms`)), timeoutMs)
-      );
+      log('debug', `DALL-E attempt ${attempt}/${maxRetries}`, { model: requestBody.model, size });
       
       const fetchPromise = fetch('https://api.openai.com/v1/images/generations', {
-        method:'POST',
-        headers:{'Authorization':`Bearer ${OPENAI_API_KEY}`,'Content-Type':'application/json'},
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify(requestBody)
       });
       
-      const res = await Promise.race([fetchPromise, timeoutPromise]);
+      const res = await makeTimeout(fetchPromise, timeoutMs, `Image generation timeout after ${timeoutMs}ms`);
       
       const responseTime = Date.now() - startTime;
       log('info', `DALL-E response received in ${responseTime}ms`, { status: res.status, attempt });
       
-      if(!res.ok){ 
+      if (!res.ok) { 
         const errorText = await res.text();
         let errorData;
         try {
@@ -295,47 +308,33 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3, fallbackInf
           errorData = { error: { message: errorText } };
         }
         
-        // Check for API key issues (401 unauthorized)
+        // Handle specific error types
         if (res.status === 401 || errorData.error?.code === 'invalid_api_key') {
-          log('error', 'OpenAI API key is invalid/expired, using fallback image generation', { 
-            status: res.status, 
-            error: errorData.error?.message || errorText 
-          });
-          
-          // For first image, create a setup guide
+          log('error', 'OpenAI API key is invalid, using fallback image generation');
           if (attempt === 1 && (!fallbackInfo || fallbackInfo.title === 'Front Cover')) {
-            log('info', 'Creating OpenAI setup guide image for first generation');
             return await createSetupGuideImage();
           }
-          
-          // For other images, create fallback
           return await generateFallbackImage(fallbackInfo, size);
         }
         
-        // Check if it's a rate limit error
         if (res.status === 429 || errorData.error?.code === 'rate_limit_exceeded') {
-          const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff
+          const waitTime = Math.pow(2, attempt) * 1000;
           log('warn', `DALL-E rate limit hit, retrying in ${waitTime}ms`, { attempt, status: res.status });
           
           if (attempt < maxRetries) {
             await sleep(waitTime);
-            continue; // Retry
+            continue;
           }
         }
         
-        // Check for insufficient quota/billing issues
         if (res.status === 402 || errorData.error?.code === 'insufficient_quota' || 
             errorData.error?.message?.includes('quota') || errorData.error?.message?.includes('billing')) {
-          log('error', 'OpenAI account has insufficient credits/quota, using fallback image generation', { 
-            status: res.status, 
-            error: errorData.error?.message || errorText 
-          });
+          log('error', 'OpenAI account has insufficient credits, using fallback image generation');
           return await generateFallbackImage(fallbackInfo, size);
         }
         
         log('error', 'DALL-E API error', { status: res.status, error: errorText, attempt });
         
-        // For final attempt, fall back to placeholder
         if (attempt === maxRetries) {
           log('warn', 'All DALL-E attempts failed, using fallback image generation');
           return await generateFallbackImage(fallbackInfo, size);
@@ -346,23 +345,23 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3, fallbackInf
       
       const data = await res.json();
       const imageUrl = data.data?.[0]?.url;
-      log('debug', 'Image generation response', { hasUrl: !!imageUrl, dataCount: data.data?.length || 0, attempt });
       
-      if(!imageUrl) {
+      if (!imageUrl) {
         log('error', 'Image generation returned no URL', data);
         throw new Error('Image generation returned empty data.');
       }
       
-      // Fetch the image from the URL and return as buffer
+      // Fetch the image from the URL
       log('info', 'Fetching generated image from URL');
       const imageRes = await fetch(imageUrl);
-      if(!imageRes.ok) {
+      if (!imageRes.ok) {
         log('error', 'Failed to fetch image from URL', { status: imageRes.status, url: imageUrl });
         throw new Error('Failed to fetch generated image.');
       }
       
       const arrayBuffer = await imageRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
+      
       log('info', `✅ DALL-E image generation completed successfully`, { 
         bufferSize: buffer.length,
         totalTime: Date.now() - startTime,
@@ -379,7 +378,6 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3, fallbackInf
         return await generateFallbackImage(fallbackInfo, size);
       }
       
-      // Wait before retrying
       const waitTime = Math.pow(2, attempt) * 1000;
       log('info', `Waiting ${waitTime}ms before image retry ${attempt + 1}/${maxRetries}`);
       await sleep(waitTime);
@@ -387,32 +385,7 @@ async function openAIImage(prompt, size='1024x1024', maxRetries = 3, fallbackInf
   }
 }
 
-async function generateFallbackImage(fallbackInfo, size = '1024x1024') {
-  try {
-    const [width, height] = size.split('x').map(Number);
-    const imageSize = Math.max(width, height); // Use larger dimension for square image
-    
-    if (!fallbackInfo) {
-      log('info', 'Creating generic fallback image');
-      return await createFallbackImage('Story Scene', 'A beautiful scene from a children\'s story', imageSize);
-    }
-    
-    log('info', `Creating fallback image for: ${fallbackInfo.title}`, { description: fallbackInfo.description?.substring(0, 100) });
-    return await createFallbackImage(
-      fallbackInfo.title || 'Story Scene',
-      fallbackInfo.description || 'A scene from a children\'s story',
-      imageSize
-    );
-  } catch (error) {
-    log('error', 'Fallback image generation failed', { error: error.message });
-    // Return a simple colored buffer as last resort
-    const Jimp = (await import('jimp')).default;
-    const image = new Jimp(1024, 1024, 0x4285F4FF);
-    return await image.getBufferAsync(Jimp.MIME_PNG);
-  }
-}
-
-// ---- Gemini API Helper ----
+// Gemini API
 async function geminiChat(prompt, maxRetries = 3) {
   const startTime = Date.now();
   log('info', `Starting Gemini API request`, { promptLength: prompt.length });
@@ -421,26 +394,19 @@ async function geminiChat(prompt, maxRetries = 3) {
     try {
       const requestBody = {
         contents: [{
-          parts: [{
-            text: prompt
-          }]
+          parts: [{ text: prompt }]
         }]
       };
       
       log('debug', `Gemini request attempt ${attempt}/${maxRetries}`);
       
-      // 30-second timeout for Gemini
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Gemini request timeout after 30s`)), 30000)
-      );
-      
-      const fetchPromise = fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const fetchPromise = fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody)
       });
       
-      const res = await Promise.race([fetchPromise, timeoutPromise]);
+      const res = await makeTimeout(fetchPromise, 30000, 'Gemini request timeout after 30s');
       
       const responseTime = Date.now() - startTime;
       log('info', `Gemini response received in ${responseTime}ms`, { status: res.status, attempt });
@@ -473,7 +439,6 @@ async function geminiChat(prompt, maxRetries = 3) {
         throw error;
       }
       
-      // Wait before retrying
       const waitTime = Math.pow(2, attempt) * 1000;
       log('info', `Waiting ${waitTime}ms before Gemini retry ${attempt + 1}/${maxRetries}`);
       await sleep(waitTime);
@@ -481,82 +446,34 @@ async function geminiChat(prompt, maxRetries = 3) {
   }
 }
 
-// ---- Firebase Storage Helper ----
-async function uploadPDFToStorage(pdfBuffer, filename) {
-  if (!firebaseConfigured || !bucket) {
-    log('info', 'Firebase not configured, returning PDF as direct download', {
-      firebaseConfigured,
-      hasBucket: !!bucket,
-      filename
-    });
-    return {
-      type: 'download',
-      data: pdfBuffer.toString('base64'),
-      filename: filename
-    };
-  }
-
+// Fallback image generation
+async function generateFallbackImage(fallbackInfo, size = '1024x1024') {
   try {
-    const file = bucket.file(`books/${Date.now()}-${filename}`);
-    await file.save(pdfBuffer, {
-      metadata: {
-        contentType: 'application/pdf',
-        metadata: {
-          firebaseStorageDownloadTokens: crypto.randomUUID()
-        }
-      }
-    });
-
-    // Make file publicly readable
-    await file.makePublic();
-
-    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
-    log('info', 'PDF uploaded to Firebase Storage', { filename, url: publicUrl });
+    const [width, height] = size.split('x').map(Number);
+    const imageSize = Math.max(width, height);
     
-    return {
-      type: 'url',
-      url: publicUrl,
-      filename: filename
-    };
+    if (!fallbackInfo) {
+      log('info', 'Creating generic fallback image');
+      return await createFallbackImage('Story Scene', 'A beautiful scene from a children\'s story', imageSize);
+    }
+    
+    log('info', `Creating fallback image for: ${fallbackInfo.title}`, { description: fallbackInfo.description?.substring(0, 100) });
+    return await createFallbackImage(
+      fallbackInfo.title || 'Story Scene',
+      fallbackInfo.description || 'A scene from a children\'s story',
+      imageSize
+    );
   } catch (error) {
-    log('error', 'Failed to upload to Firebase, falling back to download', { error: error.message });
-    return {
-      type: 'download',
-      data: pdfBuffer.toString('base64'),
-      filename: filename
-    };
+    log('error', 'Fallback image generation failed', { error: error.message });
+    // Return a simple colored buffer as last resort
+    const image = new Jimp(1024, 1024, 0x4285F4FF);
+    return await image.getBufferAsync(Jimp.MIME_PNG);
   }
 }
 
-// ---- Utility ----
-async function makeCharacterBoard(imagesB64){
-  if(!imagesB64 || imagesB64.length===0) return null;
-  const imgs = [];
-  for(const b64 of imagesB64){
-    try{
-      const img = await Jimp.read(Buffer.from((b64.split(',')[1]||b64), 'base64'));
-      imgs.push(img.cover(400, 400));
-    }catch(e){ /* skip */ }
-  }
-  if(imgs.length===0) return null;
-  const cols = Math.min(3, imgs.length);
-  const rows = Math.ceil(imgs.length/cols);
-  const cell = 420, pad = 10;
-  const w = cols*cell + (cols+1)*pad;
-  const h = rows*cell + (rows+1)*pad;
-  const board = new Jimp(w, h, 0xffffffff);
-  imgs.forEach((im, i)=>{
-    const r = Math.floor(i/cols), c = i%cols;
-    const x = pad + c*(cell+pad), y = pad + r*(cell+pad);
-    board.composite(im, x, y);
-  });
-  return await board.getBufferAsync(Jimp.MIME_PNG);
-}
-
-// Add missing functions for image generation and PDF creation
-function getJob(jobId) {
-  return jobs.get(jobId);
-}
+// ====================================================================
+// PDF AND STORAGE FUNCTIONS
+// ====================================================================
 
 async function createPDF(plan, imageBuffers, runId) {
   try {
@@ -623,27 +540,214 @@ async function uploadToStorage(buffer, path) {
   }
 }
 
-// ---- Pipeline ----
+// ====================================================================
+// CHARACTER AND PLANNING FUNCTIONS
+// ====================================================================
+
+function createStructuredCharacterAnalysis(character) {
+  const desc = (character.description || '').toLowerCase();
+  const isChild = (character.age && parseInt(character.age) < 18) || desc.includes('child') || desc.includes('kid');
+  const isJewish = desc.includes('jewish') || character.name?.includes('David') || character.name?.includes('Sarah');
+  
+  return {
+    name: character.name || 'Character',
+    age: character.age || (isChild ? 'Child (6-8 years)' : 'Young person'),
+    physicalAppearance: {
+      height: isChild ? 'Child-appropriate height' : 'Average height for age',
+      faceShape: 'Round, friendly face with warm features',
+      eyeColor: 'Warm, expressive eyes',
+      hairColor: 'Natural hair color',
+      hairStyle: isChild ? 'Neat, child-friendly hairstyle' : 'Simple, neat hairstyle',
+      skinTone: 'Warm, healthy skin tone',
+      distinctiveFeatures: character.description || 'Friendly, approachable appearance'
+    },
+    clothing: {
+      typicalOutfit: isChild ? 'Casual, comfortable children\'s clothing' : 'Simple, age-appropriate attire',
+      colors: ['blue', 'yellow', 'green'],
+      accessories: 'Simple, child-safe accessories'
+    },
+    personality: {
+      traits: ['friendly', 'curious', 'kind', 'helpful'],
+      expressions: 'Warm, engaging smile and bright eyes',
+      posture: 'Open, confident and welcoming'
+    },
+    culturalBackground: isJewish ? 'Jewish background' : 'Universal, inclusive background',
+    role: character.role || 'Supporting character'
+  };
+}
+
+function createStructuredBookPlan(title, story, numImages, artStyle, characters) {
+  const images = [];
+  const totalImages = numImages + 2; // story + covers
+  const mainCharacter = characters.find(c => c.role?.toLowerCase().includes('main')) || characters[0] || { name: 'Character' };
+  
+  // Front Cover
+  images.push({
+    page: 1,
+    title: `${title} - Front Cover`,
+    description: `Front cover illustration featuring ${mainCharacter.name} in the ${artStyle} style. ${mainCharacter.description || 'A friendly character'} stands prominently in the scene that represents the story theme. Warm, inviting colors and child-friendly composition.`,
+    characters: [mainCharacter.name],
+    environment: "Story setting that represents the main theme",
+    mood: "Welcoming, engaging",
+    composition: `${mainCharacter.name} prominently featured, eye-catching title placement`
+  });
+  
+  // Story Pages
+  for (let i = 2; i <= numImages + 1; i++) {
+    const pageNum = i - 1;
+    const isEarly = pageNum <= numImages / 3;
+    const isMiddle = pageNum > numImages / 3 && pageNum <= (2 * numImages / 3);
+    
+    let mood, environment, sceneTitle;
+    if (isEarly) {
+      mood = "Curious, beginning adventure";
+      environment = "Starting location, safe and familiar";
+      sceneTitle = `${title} - Beginning the Journey`;
+    } else if (isMiddle) {
+      mood = "Adventurous, discovering";
+      environment = "Main adventure setting";
+      sceneTitle = `${title} - The Adventure Unfolds`;
+    } else {
+      mood = "Triumphant, learning";
+      environment = "Resolution setting";
+      sceneTitle = `${title} - Resolution`;
+    }
+    
+    images.push({
+      page: i,
+      title: `${sceneTitle} - Page ${pageNum}`,
+      description: `${artStyle} illustration showing ${mainCharacter.name} in the story. ${story ? story.substring(0, 150) : 'The character experiences growth and adventure'}. Scene depicts character development and story progression appropriate for children ages 3-8.`,
+      characters: [mainCharacter.name],
+      environment,
+      mood,
+      composition: `${mainCharacter.name} in engaging scene composition, child-friendly perspective`
+    });
+  }
+  
+  // Back Cover
+  images.push({
+    page: totalImages,
+    title: `${title} - Back Cover`,
+    description: `Back cover illustration in ${artStyle} style showing a peaceful conclusion to the story. ${mainCharacter.name} appears content and happy, having completed their journey. Gentle, satisfying conclusion that appeals to children.`,
+    characters: [mainCharacter.name],
+    environment: "Peaceful, concluding setting",
+    mood: "Satisfied, peaceful",
+    composition: "Calm, reassuring final scene"
+  });
+  
+  return { images };
+}
+
+// ====================================================================
+// API ENDPOINTS
+// ====================================================================
+
+// Job status endpoint
 app.get('/api/job/:jobId', (req, res) => {
-  const jobId = req.params.jobId;
-  const job = jobs.get(jobId);
-  
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
+  try {
+    const jobId = req.params.jobId;
+    const job = jobs.get(jobId);
+    
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    // Clean up completed/failed jobs older than 1 hour
+    const oneHour = 60 * 60 * 1000;
+    if ((job.status === 'completed' || job.status === 'failed') && 
+        job.endTime && (Date.now() - job.endTime > oneHour)) {
+      jobs.delete(jobId);
+      return res.status(404).json({ error: 'Job expired' });
+    }
+    
+    res.json(job);
+  } catch (error) {
+    log('error', 'Job status endpoint error', { error: error.message });
+    res.status(500).json({ error: 'Failed to get job status' });
   }
-  
-  // Clean up completed/failed jobs older than 1 hour
-  const oneHour = 60 * 60 * 1000;
-  if ((job.status === 'completed' || job.status === 'failed') && 
-      job.endTime && (Date.now() - job.endTime > oneHour)) {
-    jobs.delete(jobId);
-    return res.status(404).json({ error: 'Job expired' });
-  }
-  
-  res.json(job);
 });
 
-// Individual image generation endpoint (serverless-optimized)
+// Story idea generation endpoint
+app.post('/api/generate-story-idea', async (req, res) => {
+  try {
+    log('info', 'PHASE START: Story idea generation');
+    
+    const prompt = `You are a creative children's book author who creates engaging, age-appropriate stories for kids aged 3-8. Generate book ideas that are wholesome, educational, and fun.
+
+I need you to create a children's book concept with the following requirements:
+- Target age: 3-8 years old
+- Story should be short and engaging  
+- 4-8 pages of content (plus covers)
+- Include a catchy title
+- Brief story outline (2-4 sentences)
+- Suggest number of pages between 4-8
+
+IMPORTANT: Respond with pure JSON only. Do not use markdown code blocks or any other formatting. Just return the raw JSON object.
+
+Respond in JSON format with exactly these fields:
+{
+  "title": "Book title here",
+  "story": "Brief story outline here", 
+  "numImages": 6
+}
+
+Make it creative, educational, and fun for children!`;
+
+    log('info', 'Calling Gemini for story idea generation (fallback to OpenAI if needed)');
+    let response;
+    try {
+      response = await geminiChat(prompt);
+    } catch (error) {
+      log('warn', 'Gemini failed, falling back to OpenAI', { error: error.message });
+      const openAIPrompt = [
+        { role: 'system', content: 'You are a creative children\'s book author.' },
+        { role: 'user', content: prompt }
+      ];
+      response = await openAIChat(openAIPrompt, 'gpt-4o-mini');
+    }
+    
+    log('debug', 'Raw story idea response', { responseLength: response.length });
+    
+    let storyIdea;
+    try {
+      storyIdea = JSON.parse(response);
+      log('info', 'PHASE END: Story idea generation (parsed JSON)', storyIdea);
+    } catch (e) {
+      log('warn', 'Failed to parse JSON, trying to extract', { error: e.message });
+      
+      // Try to extract from markdown code blocks
+      let jsonText = response;
+      const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        jsonText = codeBlockMatch[1].trim();
+      } else {
+        const match = response.match(/\{[\s\S]*\}/);
+        if (match) {
+          jsonText = match[0];
+        }
+      }
+      
+      if (jsonText) {
+        storyIdea = JSON.parse(jsonText);
+        log('info', 'PHASE END: Story idea generation (extracted JSON)', storyIdea);
+      } else {
+        log('error', 'No valid JSON found in response', { response });
+        throw new Error('Failed to generate valid story idea');
+      }
+    }
+
+    // Randomize numImages for variety (2-8 images)
+    storyIdea.numImages = Math.floor(Math.random() * 7) + 2;
+    
+    log('info', 'Story idea generation completed successfully', storyIdea);
+    res.json(storyIdea);
+  } catch (err) {
+    log('error', 'Story idea generation failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Individual image generation endpoint
 app.post('/api/generate-image', async (req, res) => {
   try {
     const { jobId, imageIndex } = req.body;
@@ -665,12 +769,11 @@ app.post('/api/generate-image', async (req, res) => {
     const imageNum = imageIndex + 1;
     log('info', `Starting individual image generation ${imageNum}/${job.plan.images.length}`, { jobId, imageIndex });
     
-    // Return immediately
+    // Return immediately to avoid timeout
     res.json({ status: 'generating', imageIndex, imageNum });
     
     // Generate image in background
     try {
-      // Update progress
       updateJob(jobId, {
         currentPhase: `Generating image ${imageNum}/${job.plan.images.length}: ${imageObj.title || 'Untitled'}...`,
         currentImageIndex: imageIndex
@@ -678,7 +781,7 @@ app.post('/api/generate-image', async (req, res) => {
       
       console.log(`🖼️ GENERATING: Image ${imageNum}/${job.plan.images.length} - ${imageObj.title} | Job: ${jobId}`);
       
-      // Create prompt (simplified for serverless)
+      // Create prompt for image generation
       const prompt = `Children's book illustration in ${job.artStyle || 'Watercolor'} style: ${imageObj.description}. Characters: ${imageObj.characters?.join(', ') || 'main character'}. Environment: ${imageObj.environment}. Mood: ${imageObj.mood}. Child-friendly, warm colors, professional illustration quality. NO text or words in image.`;
       
       const buf = await openAIImage(prompt, '1024x1024', 2, imageObj);
@@ -695,17 +798,17 @@ app.post('/api/generate-image', async (req, res) => {
       // Check if all images are complete
       const updatedJob = getJob(jobId);
       if (updatedJob.generatedImages >= updatedJob.totalImages) {
-        // All images complete - trigger PDF generation
         updateJob(jobId, {
           currentPhase: 'All images complete - Building PDF...',
           completedSteps: updatedJob.totalImages + 2
         });
         console.log(`🎉 ALL IMAGES COMPLETE: Starting PDF generation | Job: ${jobId}`);
         
-        // Trigger PDF generation via separate endpoint
+        // Trigger PDF generation
         setTimeout(async () => {
           try {
-            const pdfResponse = await fetch(`${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`}/api/generate-pdf`, {
+            const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`;
+            const pdfResponse = await fetch(`${baseUrl}/api/generate-pdf`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ jobId })
@@ -729,11 +832,13 @@ app.post('/api/generate-image', async (req, res) => {
     
   } catch (err) {
     log('error', 'Image generation endpoint error', { error: err.message });
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
-// Individual PDF generation endpoint (serverless-optimized)
+// PDF generation endpoint
 app.post('/api/generate-pdf', async (req, res) => {
   try {
     const { jobId } = req.body;
@@ -749,7 +854,7 @@ app.post('/api/generate-pdf', async (req, res) => {
     
     log('info', 'Starting PDF generation', { jobId });
     
-    // Return immediately
+    // Return immediately to avoid timeout
     res.json({ status: 'generating pdf' });
     
     // Generate PDF in background
@@ -761,7 +866,7 @@ app.post('/api/generate-pdf', async (req, res) => {
       
       console.log(`📄 GENERATING: PDF for ${job.plan.title} | Job: ${jobId}`);
       
-      // Collect all generated images from job data
+      // Collect all generated images
       const imageDataList = [];
       for (let i = 0; i < job.totalImages; i++) {
         const imageData = job[`image_${i}`];
@@ -774,10 +879,10 @@ app.post('/api/generate-pdf', async (req, res) => {
         throw new Error(`Missing images: found ${imageDataList.length} of ${job.totalImages}`);
       }
       
-      // Generate PDF with all images
+      // Generate PDF
       const pdfBuffer = await createPDF(job.plan, imageDataList, job.runId);
       
-      // Upload PDF to Firebase
+      // Upload to storage
       const pdfFilename = `${job.runId}-${job.plan.title.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
       const pdfUrl = await uploadToStorage(pdfBuffer, `books/${pdfFilename}`);
       
@@ -809,104 +914,23 @@ app.post('/api/generate-pdf', async (req, res) => {
     
   } catch (err) {
     log('error', 'PDF generation endpoint error', { error: err.message });
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
-app.post('/api/generate-story-idea', async (req, res) => {
-  log('info', 'PHASE START: Story idea generation');
-  
-  try {
-    const prompt = `You are a creative children's book author who creates engaging, age-appropriate stories for kids aged 3-8. Generate book ideas that are wholesome, educational, and fun.
-
-I need you to create a children's book concept with the following requirements:
-- Target age: 3-8 years old
-- Story should be short and engaging  
-- 4-8 pages of content (plus covers)
-- Include a catchy title
-- Brief story outline (2-4 sentences)
-- Suggest number of pages between 4-8
-
-First, think about what kind of story would be engaging for children this age, considering themes like friendship, learning, adventure, or problem-solving.
-
-IMPORTANT: Respond with pure JSON only. Do not use markdown code blocks or any other formatting. Just return the raw JSON object.
-
-Then, respond in JSON format with exactly these fields:
-{
-  "title": "Book title here",
-  "story": "Brief story outline here", 
-  "numImages": 6
-}
-
-Make it creative, educational, and fun for children!`;
-
-    log('info', 'Calling Gemini for story idea generation (fallback to OpenAI if needed)');
-    let response;
-    try {
-      response = await geminiChat(prompt);
-    } catch (error) {
-      log('warn', 'Gemini failed, falling back to OpenAI', { error: error.message });
-      // Fallback to OpenAI with improved prompt
-      const openAIPrompt = [
-        {role: 'system', content: 'You are a creative children\'s book author.'},
-        {role: 'user', content: prompt}
-      ];
-      response = await openAIChat(openAIPrompt, 'gpt-3.5-turbo');
-    }
-    log('debug', 'Raw story idea response', { responseLength: response.length, preview: response.substring(0, 200) });
-    
-    let storyIdea;
-    try {
-      storyIdea = JSON.parse(response);
-      log('info', 'PHASE END: Story idea generation (parsed JSON)', storyIdea);
-    } catch (e) {
-      log('warn', 'Failed to parse JSON, trying to extract', { error: e.message });
-      
-      // First try to extract from markdown code blocks
-      let jsonText = response;
-      const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (codeBlockMatch) {
-        jsonText = codeBlockMatch[1].trim();
-      } else {
-        // Fallback to original extraction method
-        const match = response.match(/\{[\s\S]*\}/);
-        if (match) {
-          jsonText = match[0];
-        }
-      }
-      
-      if (jsonText) {
-        storyIdea = JSON.parse(jsonText);
-        log('info', 'PHASE END: Story idea generation (extracted JSON)', storyIdea);
-      } else {
-        log('error', 'No valid JSON found in response', { response });
-        throw new Error('Failed to generate valid story idea');
-      }
-    }
-
-    // Always randomize numImages for variety (2-8 images)
-    const oldValue = storyIdea.numImages;
-    storyIdea.numImages = Math.floor(Math.random() * 7) + 2; // 2-8
-    log('info', 'Randomized numImages for variety', { from: oldValue, to: storyIdea.numImages });
-
-    log('info', 'Story idea generation completed successfully', storyIdea);
-    res.json(storyIdea);
-  } catch (err) {
-    log('error', 'Story idea generation failed', { error: err.message, stack: err.stack });
-    res.status(500).json({ error: err.message });
-  }
-});
-
+// Main book generation endpoint
 app.post('/api/generate', async (req, res) => {
   const jobId = Date.now().toString(36) + Math.random().toString(36).substr(2);
   
-  try{
+  try {
     const { title, story, numImages, artStyle, characters } = req.body || {};
     log('debug', 'Request payload', { title, story, numImages, artStyle, characterCount: characters?.length });
     
-    if(!title || !numImages || !Array.isArray(characters)){
+    if (!title || !numImages || !Array.isArray(characters)) {
       log('error', 'Missing required fields', { hasTitle: !!title, hasNumImages: !!numImages, hasCharacters: Array.isArray(characters) });
-      return res.status(400).json({error:'Missing required fields: title, numImages, characters[]'});
+      return res.status(400).json({ error: 'Missing required fields: title, numImages, characters[]' });
     }
     
     const selectedStyle = artStyle || 'Watercolor';
@@ -925,7 +949,7 @@ app.post('/api/generate', async (req, res) => {
     // Start generation in background
     generateBookAsync(jobId, { title, story, numImages, artStyle: selectedStyle, characters });
     
-  } catch(err) {
+  } catch (err) {
     failJob(jobId, err);
     log('error', 'Book generation setup failed', { error: err.message, jobId });
     if (!res.headersSent) {
@@ -934,225 +958,61 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+// ====================================================================
+// BACKGROUND PROCESSING
+// ====================================================================
+
 async function generateBookAsync(jobId, { title, story, numImages, artStyle, characters }) {
   try {
-
-    // 1) Character analyses (text-based): for all characters with name/description
+    // 1) Character Analysis (Serverless-optimized)
     const charactersWithInfo = characters.filter(ch => 
       (ch.name && ch.name.trim()) || 
       (ch.description && ch.description.trim()) || 
       (ch.age && ch.age.trim()) ||
       (ch.role && ch.role.trim())
     );
+    
     updateJob(jobId, { currentPhase: `Analyzing ${charactersWithInfo.length} characters...`, completedSteps: 0 });
     log('info', 'PHASE START: Character analysis', { jobId, totalCharacters: characters.length, charactersWithInfo: charactersWithInfo.length });
     
-    // Serverless-optimized character analysis (skip AI to avoid timeouts)
     const analyses = [];
     if (charactersWithInfo.length > 0) {
-      // Safety: limit to max 3 characters for speed
       const maxCharacters = Math.min(charactersWithInfo.length, 3);
-      log('info', `Processing ${maxCharacters} characters (serverless mode - using structured fallbacks)`, { requested: charactersWithInfo.length, processing: maxCharacters });
-      console.log(`🚀 FAST ANALYSIS: Processing ${maxCharacters} characters with structured fallbacks (serverless optimized)`);
+      log('info', `Processing ${maxCharacters} characters (serverless mode - structured analysis)`, { requested: charactersWithInfo.length, processing: maxCharacters });
+      console.log(`🚀 FAST ANALYSIS: Processing ${maxCharacters} characters with structured analysis`);
       
-      // Create enhanced fallback analysis function
-      const createServerlessAnalysis = (ch) => {
-        // Extract features from description if available
-        const desc = (ch.description || '').toLowerCase();
-        const hasHair = desc.includes('hair') || desc.includes('blonde') || desc.includes('brown') || desc.includes('black');
-        const hasEyes = desc.includes('eyes') || desc.includes('blue') || desc.includes('green') || desc.includes('brown');
-        const isChild = (ch.age && parseInt(ch.age) < 18) || desc.includes('child') || desc.includes('kid') || desc.includes('little');
-        const isJewish = desc.includes('jewish') || desc.includes('jewish') || ch.name?.includes('David') || ch.name?.includes('Sarah');
-        
-        return {
-          name: ch.name || 'Character',
-          age: ch.age || (isChild ? 'Child (6-8 years)' : 'Young person'),
-          physicalAppearance: {
-            height: isChild ? 'Child-appropriate height' : 'Average height for age',
-            faceShape: 'Round, friendly face with warm features',
-            eyeColor: hasEyes ? 'Bright, expressive eyes' : 'Warm brown eyes',
-            hairColor: hasHair ? 'Natural hair color' : 'Brown hair',
-            hairStyle: isChild ? 'Neat, child-friendly hairstyle' : 'Simple, neat hairstyle',
-            skinTone: 'Warm, healthy skin tone',
-            distinctiveFeatures: ch.description || 'Friendly, approachable appearance'
-          },
-          clothing: {
-            typicalOutfit: isChild ? 'Casual, comfortable children\'s clothing' : 'Simple, age-appropriate attire',
-            colors: ['blue', 'yellow', 'green'],
-            accessories: 'Simple, child-safe accessories'
-          },
-          personality: {
-            traits: ['friendly', 'curious', 'kind', 'helpful'],
-            expressions: 'Warm, engaging smile and bright eyes',
-            posture: 'Open, confident and welcoming'
-          },
-          culturalBackground: isJewish ? 'Jewish background' : 'Universal, inclusive background',
-          role: ch.role || 'Supporting character',
-          artStyleNotes: `Perfect for ${artStyle} art style with warm, child-friendly features and consistent visual elements`
-        };
-      };
-
-      // Process all characters instantly with structured fallbacks
       charactersWithInfo.slice(0, maxCharacters).forEach((ch, index) => {
         const characterName = ch.name || `Character ${index + 1}`;
         console.log(`⚡ INSTANT: ${characterName} | Using structured analysis`);
         
-        const analysis = createServerlessAnalysis(ch);
+        const analysis = createStructuredCharacterAnalysis(ch);
         analyses.push(analysis);
         
-        console.log(`✅ SUCCESS: ${characterName} | Structured analysis completed instantly`);
+        console.log(`✅ SUCCESS: ${characterName} | Analysis completed instantly`);
       });
       
-      console.log(`🎯 COMPLETED: Character analysis finished instantly | ${analyses.length}/${maxCharacters} characters processed`);
-      
+      console.log(`🎯 COMPLETED: Character analysis finished | ${analyses.length}/${maxCharacters} characters processed`);
     } else {
       log('info', 'No characters with information found, skipping character analysis');
       console.log(`ℹ️  SKIPPED: No characters with information found`);
     }
+    
     updateJob(jobId, { completedSteps: 1, currentPhase: 'Planning book structure...' });
     log('info', 'PHASE END: Character analysis', { characterCount: analyses.length, jobId });
     console.log(`🔄 TRANSITION: Analyzing characters → Plan JSON | Job: ${jobId} | Completed: ${analyses.length} characters`);
 
-    // 2) Planning (JSON): gpt-4o
-    const totalImages = numImages + 2; // story images + front cover + back cover
+    // 2) Book Planning (Serverless-optimized)
+    const totalImages = numImages + 2;
     log('info', 'PHASE START: Book planning');
-    const characterInfo = analyses.length > 0 
-      ? `Characters with detailed analysis (use these exact details when mentioning characters):\n${analyses.map((a, i) => `Character ${i + 1}: ${JSON.stringify(a, null, 2)}`).join('\n\n')}`
-      : `Characters from story: ${characters.map(c => `${c.name} (${c.role})`).join(', ') || 'Create characters from story context'}`;    
-
-    const planningPrompt = `You are a children's book art director creating a detailed visual plan for a children's book.
-
-I need you to create a structured plan for ${totalImages} images that will tell this story visually:
-
-Book Title: "${title}"
-Story: ${story || 'Create scenes from title'}
-Art Style: ${artStyle}
-${characterInfo}
-
-The images should be organized as:
-- Image 1: Front cover (flat 2D artwork showing the main character and story theme)
-- Images 2-${numImages + 1}: Story scenes (${numImages} total scenes that progress through the story)
-- Image ${totalImages}: Back cover (flat 2D artwork, can be a peaceful ending scene)
-
-For each image, I need:
-- page: The image number (1, 2, 3, etc.)
-- title: A descriptive name for the scene (e.g., "David Has An Idea - Morning Train")
-- description: A detailed description of what should be shown in the image
-- characters: Array of character names that appear in this scene
-- environment: The setting/location where this scene takes place
-- mood: The emotional tone of the scene (e.g., "Joyful, imaginative", "Playful but slightly frustrated")
-- composition: How the scene should be framed and composed (e.g., "David slightly off-center, proudly arranging cushions like a train. Emphasis on the playful atmosphere.")
-
-${analyses.length > 0 ? `IMPORTANT: When describing characters, use the detailed analysis provided above. For example, if describing ${analyses[0]?.name || 'the character'}, include specific details like their physical appearance, clothing, and personality traits as specified in their character analysis.` : ''}
-
-Think about how to break the story into ${totalImages} engaging visual scenes that flow well together and tell the complete story.
-
-IMPORTANT: Respond with pure JSON only. Do not use markdown code blocks or any other formatting. Just return the raw JSON object.
-
-Provide the response in this exact JSON format:
-{
-  "images": [
-    {
-      "page": 1,
-      "title": "David Has An Idea - Morning Train",
-      "description": "A cozy living room in soft daylight. David, a 3-year-old boy with curly brown hair and bright eyes, stands in the center surrounded by colorful pillows. He is small, barefoot, wearing short pajamas with stars. Around him, scattered cushions of different colors (blue, yellow, green, red). He is excitedly stacking them to resemble a train: a line of pillows like train cars. Background: simple wooden floor, a window with warm morning light, a few toys on a shelf.",
-      "characters": ["David"],
-      "environment": "cozy living room with morning light",
-      "mood": "Joyful, imaginative",
-      "composition": "David slightly off-center, proudly arranging cushions like a train. Emphasis on the playful atmosphere."
-    }
-  ]
-}`;
     
-    // Serverless-optimized book planning (skip AI to avoid timeouts)
     log('info', 'Using structured book planning (serverless optimized)');
     console.log(`📋 FAST PLANNING: Creating structured book plan for ${totalImages} images`);
     
-    // Create structured plan based on story and characters
-    const createServerlessPlan = () => {
-      const images = [];
-      const mainCharacter = characters.find(c => c.role?.toLowerCase().includes('main')) || characters[0] || { name: 'Character' };
-      
-      // Front Cover
-      images.push({
-        page: 1,
-        title: `${title} - Front Cover`,
-        description: `Front cover illustration featuring ${mainCharacter.name} in the ${artStyle} style. ${mainCharacter.description || 'A friendly character'} stands prominently in the scene that represents the story theme. The setting suggests ${story ? story.substring(0, 100) : 'an engaging children\'s story'}. Warm, inviting colors and child-friendly composition.`,
-        characters: [mainCharacter.name],
-        environment: "Story setting that represents the main theme",
-        mood: "Welcoming, engaging",
-        composition: `${mainCharacter.name} prominently featured, eye-catching title placement`
-      });
-      
-      // Story Pages
-      for (let i = 2; i <= numImages + 1; i++) {
-        const pageNum = i - 1;
-        const isEarly = pageNum <= numImages / 3;
-        const isMiddle = pageNum > numImages / 3 && pageNum <= (2 * numImages / 3);
-        const isLate = pageNum > (2 * numImages / 3);
-        
-        let mood, environment, title;
-        if (isEarly) {
-          mood = "Curious, beginning adventure";
-          environment = "Starting location, safe and familiar";
-          title = `${title} - Beginning the Journey`;
-        } else if (isMiddle) {
-          mood = "Adventurous, discovering";
-          environment = "Main adventure setting";
-          title = `${title} - The Adventure Unfolds`;
-        } else {
-          mood = "Triumphant, learning";
-          environment = "Resolution setting";
-          title = `${title} - Resolution`;
-        }
-        
-        images.push({
-          page: i,
-          title: `${title} - Page ${pageNum}`,
-          description: `${artStyle} illustration showing ${mainCharacter.name} in the story. ${story ? story.substring(0, 150) : 'The character experiences growth and adventure'}. Scene depicts character development and story progression appropriate for children ages 3-8.`,
-          characters: [mainCharacter.name],
-          environment,
-          mood,
-          composition: `${mainCharacter.name} in engaging scene composition, child-friendly perspective`
-        });
-      }
-      
-      // Back Cover
-      images.push({
-        page: totalImages,
-        title: `${title} - Back Cover`,
-        description: `Back cover illustration in ${artStyle} style showing a peaceful conclusion to the story. ${mainCharacter.name} appears content and happy, having completed their journey. Gentle, satisfying conclusion that appeals to children.`,
-        characters: [mainCharacter.name],
-        environment: "Peaceful, concluding setting",
-        mood: "Satisfied, peaceful",
-        composition: "Calm, reassuring final scene"
-      });
-      
-      return { images };
-    };
+    const plan = createStructuredBookPlan(title, story, numImages, artStyle, characters);
+    console.log(`✅ PLANNED: Book structure created instantly with ${plan.images.length} images`);
     
-    const generatedPlan = createServerlessPlan();
-    const planText = JSON.stringify(generatedPlan);
-    console.log(`✅ PLANNED: Book structure created instantly with ${generatedPlan.images.length} images`);
-    log('debug', 'Structured planning response', { responseLength: planText.length, imageCount: generatedPlan.images.length });
-    
-    // Use the structured plan directly (no parsing needed)
-    const plan = generatedPlan;
     updateJob(jobId, { completedSteps: 2, currentPhase: 'Starting image generation...' });
-    
-    // Validate each image has required fields (already structured properly)
-    if (plan.images) {
-      plan.images.forEach((img) => {
-        if (!img.mood) img.mood = 'Warm, engaging';
-        if (!img.composition) img.composition = 'Balanced composition focusing on main characters';
-      });
-    }
-    
-    log('info', 'PHASE END: Book planning (structured plan)', { 
-      imageCount: plan.images?.length || 0,
-      expectedCount: totalImages,
-      jobId
-    });
+    log('info', 'PHASE END: Book planning', { imageCount: plan.images?.length || 0, expectedCount: totalImages, jobId });
     console.log(`🔄 TRANSITION: Plan JSON → Create cover + pages | Job: ${jobId} | Images planned: ${plan.images?.length || 0}`);
     
     // Validate plan structure
@@ -1161,43 +1021,22 @@ Provide the response in this exact JSON format:
       throw new Error('Plan must contain an "images" array');
     }
     
-    // Flexible image count handling - adjust to what AI generated
-    const actualImages = plan.images.length;
-    if (actualImages !== totalImages) {
-      log('warn', 'AI generated different image count than expected, adjusting', { 
-        expectedImages: totalImages, 
-        actualImages: actualImages
-      });
-      // Update job total steps to match actual images
-      updateJob(jobId, { 
-        totalSteps: actualImages + 3 // character analysis + planning + actual images + PDF
-      });
-    }
-    
-    log('info', 'Plan validation passed', { 
-      expectedImages: totalImages,
-      actualImages: actualImages,
-      jobId
-    });
-
-    // 3) Prepare for image generation (serverless-optimized)
+    // 3) Prepare for Image Generation
     log('info', 'PHASE START: Preparing for image generation');
     const runId = Date.now().toString(36);
     
-    // Store the plan and job info for individual image generation calls
     updateJob(jobId, { 
       completedSteps: 2, 
       currentPhase: 'Ready for image generation...',
       plan: plan,
       runId: runId,
       totalImages: plan.images.length,
-      generatedImages: 0
+      generatedImages: 0,
+      artStyle: artStyle
     });
     
-    // Trigger individual image generation (serverless-optimized)
     console.log(`🚀 TRIGGERING: Starting individual image generation | Job: ${jobId}`);
     
-    // Start the first image generation
     updateJob(jobId, {
       completedSteps: 2,
       currentPhase: `Generating image 1/${plan.images.length}: ${plan.images[0]?.title || 'Untitled'}...`,
@@ -1208,7 +1047,7 @@ Provide the response in this exact JSON format:
     log('info', 'PHASE END: Background processing setup complete', { jobId });
     console.log(`🎯 SETUP COMPLETE: Job ready for image generation | Job: ${jobId}`);
     
-  } catch(err){
+  } catch (err) {
     failJob(jobId, err);
     log('error', 'Book generation failed', { 
       error: err.message, 
@@ -1219,18 +1058,36 @@ Provide the response in this exact JSON format:
   }
 }
 
-// For local development
+// ====================================================================
+// SERVER STARTUP
+// ====================================================================
+
+// Validation
+if (!OPENAI_API_KEY) {
+  log('error', 'Missing OPENAI_API_KEY in environment variables');
+}
+
+if (!GEMINI_API_KEY) {
+  log('error', 'Missing GEMINI_API_KEY in environment variables');
+}
+
+log('info', `Server starting on port ${PORT}`);
+log('info', 'OpenAI API Key configured: ' + (OPENAI_API_KEY ? 'Yes' : 'No'));
+log('info', 'Gemini API Key configured: ' + (GEMINI_API_KEY ? 'Yes' : 'No'));
+
+// Start server (local development only)
 if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, ()=> {
+  app.listen(PORT, () => {
     log('info', `Server running at http://localhost:${PORT}`);
     log('info', 'Available endpoints:');
     log('info', '  POST /api/generate-story-idea - Generate story from scratch');
     log('info', '  POST /api/generate - Generate complete book');
-    log('info', '  GET /output/* - Serve generated files');
+    log('info', '  POST /api/generate-image - Generate individual image');
+    log('info', '  POST /api/generate-pdf - Generate PDF');
+    log('info', '  GET /api/job/:jobId - Get job status');
     log('info', 'Server ready to accept requests');
   });
 }
 
 // Export for Vercel serverless
 export default app;
- 
